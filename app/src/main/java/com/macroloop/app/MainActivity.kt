@@ -263,7 +263,11 @@ class MainActivity : ComponentActivity() {
         }
 
         if (showNew) NewMacroDialog(
-            onCreate = { name -> MacroRepository.create(name); showNew = false },
+            onCreate = { name ->
+                val m = MacroRepository.create(name)
+                showNew = false
+                startEditor(m)
+            },
             onCancel = { showNew = false },
         )
         deleting?.let { m ->

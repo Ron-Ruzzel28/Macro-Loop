@@ -5,12 +5,14 @@ import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.LinearLayout
 import android.widget.TextView
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,12 +21,13 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.random.Random
 
 /**
  * Accessibility service. It does three jobs:
- *  1. performs taps for the macro runner,
+ *  1. performs taps and swipes for the macro runner,
  *  2. hosts the floating editor,
  *  3. shows the small run bar with the Stop button.
  * Overlays use TYPE_ACCESSIBILITY_OVERLAY, so no "draw over other apps" permission is needed.
@@ -38,6 +41,7 @@ class MacroService : AccessibilityService() {
 
         const val PREFS = "macroloop"
         const val PREF_HUMAN = "human_timing"
+        private const val DEFAULT_HOLD_MS = 60L
     }
 
     private lateinit var wm: WindowManager
@@ -94,10 +98,16 @@ class MacroService : AccessibilityService() {
 
     fun isRunning() = runJob?.isActive == true
 
+    /** Run a saved macro from the app. Closes the editor first. */
     fun startRun(macroId: String, countdownSeconds: Int = 3) {
         val macro = MacroRepository.get(macroId) ?: return
-        stopRun()
         closeEditor()
+        runMacro(macro, countdownSeconds, null)
+    }
+
+    /** Run the given macro now. [onFinished] is called when it ends, is stopped, or fails. */
+    fun runMacro(macro: Macro, countdownSeconds: Int, onFinished: (() -> Unit)?) {
+        stopRun()
         showRunBar()
         runJob = scope.launch {
             val human = humanTiming()
@@ -109,32 +119,18 @@ class MacroService : AccessibilityService() {
                 for (round in 1..macro.repeat) {
                     for ((i, step) in macro.steps.withIndex()) {
                         setStatus("${macro.name}\nRound $round of ${macro.repeat}, step ${i + 1} of ${macro.steps.size}")
-                        when (step.type) {
-                            StepType.CLICK -> {
-                                val ok = tap(step.x, step.y, human)
-                                if (!ok) {
-                                    finish("Stopped: the tap in step ${i + 1} was cancelled by Android.")
-                                    return@launch
-                                }
-                                delay(if (human) Random.nextLong(150, 350) else 100)
-                            }
-                            StepType.WAIT -> delay(waitTime(step.ms, human))
-                            StepType.CLICK_IMAGE -> {
-                                when (val outcome = runPictureStep(macro.name, i, step, human)) {
-                                    PictureOutcome.Done, PictureOutcome.Skipped ->
-                                        delay(if (human) Random.nextLong(150, 350) else 100)
-                                    is PictureOutcome.Failed -> {
-                                        finish(outcome.message)
-                                        return@launch
-                                    }
-                                }
-                            }
+                        val problem = runStep(macro.name, i, step, human)
+                        if (problem != null) {
+                            finish(problem)
+                            return@launch
                         }
                     }
                 }
                 finish("Finished: ${macro.name}")
-            } catch (e: kotlinx.coroutines.CancellationException) {
+            } catch (e: CancellationException) {
                 throw e
+            } finally {
+                onFinished?.invoke()
             }
         }
     }
@@ -151,6 +147,34 @@ class MacroService : AccessibilityService() {
         removeRunBar()
     }
 
+    /** Runs one step with its delay, repeat and wait-next settings. Returns a message if the macro must stop. */
+    private suspend fun runStep(macroName: String, index: Int, step: Step, human: Boolean): String? {
+        if (step.type == StepType.WAIT) {
+            delay(waitTime(step.ms, human))
+            return null
+        }
+        if (step.delayMs > 0) delay(step.delayMs)
+        repeat(step.repeatCount) {
+            when (step.type) {
+                StepType.CLICK -> {
+                    val ok = tap(step.x, step.y, human, step.holdMs, step.randomizePx)
+                    if (!ok) return "Stopped: the tap in step ${index + 1} was cancelled by Android."
+                }
+                StepType.SWIPE -> {
+                    val ok = swipe(step, human)
+                    if (!ok) return "Stopped: the swipe in step ${index + 1} was cancelled by Android."
+                }
+                StepType.CLICK_IMAGE -> when (val outcome = runPictureStep(macroName, index, step, human)) {
+                    PictureOutcome.Done, PictureOutcome.Skipped -> Unit
+                    is PictureOutcome.Failed -> return outcome.message
+                }
+                StepType.WAIT -> Unit
+            }
+        }
+        val after = step.waitNextMs + if (human) Random.nextLong(50, 250) else 0L
+        if (after > 0) delay(after)
+        return null
+    }
 
     private sealed class PictureOutcome {
         data object Done : PictureOutcome()
@@ -161,12 +185,12 @@ class MacroService : AccessibilityService() {
     /** Looks for the picture until it is found and steady, or until the time is up. */
     private suspend fun runPictureStep(macroName: String, index: Int, step: Step, human: Boolean): PictureOutcome {
         val template = TemplateStore.load(step.templateId)
-            ?: return PictureOutcome.Failed("Stopped: the picture for step ${index + 1} is missing. Edit the macro and add it again.")
+            ?: return PictureOutcome.Failed("Stopped: step ${index + 1} has no picture yet. Edit the macro, tap the box and capture it.")
         val capture = CaptureService.instance
             ?: return PictureOutcome.Failed("Stopped: screen capture is off. Open MacroLoop, tap Set up, and turn it on.")
         capture.fast = true
         try {
-            val startedAt = android.os.SystemClock.elapsedRealtime()
+            val startedAt = SystemClock.elapsedRealtime()
             var bestScore = 0.0
             var last: Matcher.Result? = null
             var steady = 0
@@ -176,7 +200,7 @@ class MacroService : AccessibilityService() {
                     val scale = if (step.capW > 0) frame.width.toDouble() / step.capW else 1.0
                     val region = if (step.wholeScreen) null
                     else Matcher.nearRegion(step.boxX, step.boxY, step.boxW, step.boxH, scale, frame.width, frame.height)
-                    val res = kotlinx.coroutines.withContext(Dispatchers.Default) {
+                    val res = withContext(Dispatchers.Default) {
                         Matcher.find(frame, template, region, step.threshold, scale)
                     }
                     DebugState.record(frame, res, step.threshold, step.label)
@@ -190,7 +214,7 @@ class MacroService : AccessibilityService() {
                             kotlin.math.abs(prev.x - res.x) <= 8 && kotlin.math.abs(prev.y - res.y) <= 8
                         ) steady + 1 else 1
                         if (steady >= 2) {
-                            val ok = tap(res.centerX, res.centerY, human)
+                            val ok = tap(res.centerX, res.centerY, human, step.holdMs, step.randomizePx)
                             return if (ok) PictureOutcome.Done
                             else PictureOutcome.Failed("Stopped: the tap on the picture was cancelled by Android.")
                         }
@@ -199,7 +223,7 @@ class MacroService : AccessibilityService() {
                     }
                     last = res
                 }
-                val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+                val elapsed = SystemClock.elapsedRealtime() - startedAt
                 if (elapsed >= step.timeoutMs) break
                 setStatus("$macroName\nStep ${index + 1}: looking for \"${step.label}\" (${elapsed / 1000} s)")
                 delay(120)
@@ -220,16 +244,34 @@ class MacroService : AccessibilityService() {
     private fun waitTime(ms: Long, human: Boolean): Long =
         if (!human) ms else (ms * Random.nextDouble(0.95, 1.10)).toLong() + Random.nextLong(0, 80)
 
-    private suspend fun tap(x: Int, y: Int, human: Boolean): Boolean =
+    private fun jitter(range: Int): Int = if (range > 0) Random.nextInt(-range, range + 1) else 0
+
+    private suspend fun tap(x: Int, y: Int, human: Boolean, holdMs: Long, randomizePx: Int): Boolean {
+        val spread = maxOf(randomizePx, if (human) 3 else 0)
+        val px = (x + jitter(spread)).coerceAtLeast(0)
+        val py = (y + jitter(spread)).coerceAtLeast(0)
+        val hold = when {
+            holdMs > 0 -> holdMs
+            human -> Random.nextLong(50, 95)
+            else -> DEFAULT_HOLD_MS
+        }
+        val path = Path().apply { moveTo(px.toFloat(), py.toFloat()) }
+        return dispatch(GestureDescription.StrokeDescription(path, 0, hold))
+    }
+
+    private suspend fun swipe(step: Step, human: Boolean): Boolean {
+        val spread = maxOf(step.randomizePx, if (human) 3 else 0)
+        val path = Path().apply {
+            moveTo((step.x + jitter(spread)).coerceAtLeast(0).toFloat(), (step.y + jitter(spread)).coerceAtLeast(0).toFloat())
+            lineTo((step.x2 + jitter(spread)).coerceAtLeast(0).toFloat(), (step.y2 + jitter(spread)).coerceAtLeast(0).toFloat())
+        }
+        val duration = if (human) (step.swipeMs * Random.nextDouble(0.9, 1.15)).toLong() else step.swipeMs
+        return dispatch(GestureDescription.StrokeDescription(path, 0, duration.coerceAtLeast(50)))
+    }
+
+    private suspend fun dispatch(stroke: GestureDescription.StrokeDescription): Boolean =
         suspendCancellableCoroutine { cont ->
-            val jitter = if (human) 3 else 0
-            val px = (x + if (jitter > 0) Random.nextInt(-jitter, jitter + 1) else 0).coerceAtLeast(0)
-            val py = (y + if (jitter > 0) Random.nextInt(-jitter, jitter + 1) else 0).coerceAtLeast(0)
-            val hold = if (human) Random.nextLong(50, 95) else 60L
-            val path = Path().apply { moveTo(px.toFloat(), py.toFloat()) }
-            val gesture = GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0, hold))
-                .build()
+            val gesture = GestureDescription.Builder().addStroke(stroke).build()
             val accepted = dispatchGesture(
                 gesture,
                 object : GestureResultCallback() {
