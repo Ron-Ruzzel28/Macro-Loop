@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MacroLoop</string>
+    <string name="service_description">Lets MacroLoop tap and swipe for you, and show its editor over other apps. It does not read or send anything you see.</string>
+</resources>
