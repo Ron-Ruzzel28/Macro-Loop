@@ -5,6 +5,44 @@ import org.json.JSONObject
 
 enum class StepType { CLICK, SWIPE, WAIT, CLICK_IMAGE }
 
+/**
+ * Something that must (or must not) be on screen before a step runs.
+ * It is a picture looked for near where it was captured.
+ */
+data class Condition(
+    val templateId: String = "",
+    val label: String = "",
+    val mustAppear: Boolean = true,     // false = the picture must NOT be on screen
+    val threshold: Int = 90,
+    val wholeScreen: Boolean = false,
+    val boxX: Int = 0,
+    val boxY: Int = 0,
+    val boxW: Int = 0,
+    val boxH: Int = 0,
+    val capW: Int = 0,
+    val capH: Int = 0,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("templateId", templateId).put("label", label)
+        .put("mustAppear", mustAppear).put("threshold", threshold)
+        .put("wholeScreen", wholeScreen)
+        .put("boxX", boxX).put("boxY", boxY).put("boxW", boxW).put("boxH", boxH)
+        .put("capW", capW).put("capH", capH)
+
+    companion object {
+        fun fromJson(o: JSONObject) = Condition(
+            templateId = o.optString("templateId", ""),
+            label = o.optString("label", ""),
+            mustAppear = o.optBoolean("mustAppear", true),
+            threshold = o.optInt("threshold", 90),
+            wholeScreen = o.optBoolean("wholeScreen", false),
+            boxX = o.optInt("boxX"), boxY = o.optInt("boxY"),
+            boxW = o.optInt("boxW"), boxH = o.optInt("boxH"),
+            capW = o.optInt("capW"), capH = o.optInt("capH"),
+        )
+    }
+}
+
 data class Step(
     val type: StepType,
     val x: Int = 0,
@@ -35,6 +73,9 @@ data class Step(
     val delayMs: Long = 0,              // wait before this step
     val waitNextMs: Long = 100,         // wait after this step
     val randomizePx: Int = 0,           // random offset on every tap
+    // conditions: the step runs only when these hold
+    val conditions: List<Condition> = emptyList(),
+    val anyOf: Boolean = false,         // false = all must hold, true = any one is enough
 ) {
     /** One readable line, in plain words. */
     fun describe(): String = when (type) {
@@ -63,6 +104,8 @@ data class Step(
         .put("delayMs", delayMs)
         .put("waitNextMs", waitNextMs)
         .put("randomizePx", randomizePx)
+        .put("anyOf", anyOf)
+        .put("conditions", JSONArray().also { a -> conditions.forEach { a.put(it.toJson()) } })
 
     companion object {
         fun fromJson(o: JSONObject) = Step(
@@ -89,6 +132,10 @@ data class Step(
             delayMs = o.optLong("delayMs", 0),
             waitNextMs = o.optLong("waitNextMs", 100),
             randomizePx = o.optInt("randomizePx", 0),
+            anyOf = o.optBoolean("anyOf", false),
+            conditions = o.optJSONArray("conditions")?.let { a ->
+                List(a.length()) { Condition.fromJson(a.getJSONObject(it)) }
+            } ?: emptyList(),
         )
     }
 }

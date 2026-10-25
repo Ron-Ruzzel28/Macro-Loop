@@ -127,14 +127,15 @@ class ToolButton(
 class MarkerView(
     context: Context,
     val kind: Kind,
-    var number: Int,
+    var badge: String,
+    private val accent: Int = TokenInts.primary,
     private val wm: WindowManager,
     val lp: WindowManager.LayoutParams,
     private val onChanged: (MarkerView) -> Unit,
     private val onTapped: (MarkerView) -> Unit,
 ) : View(context) {
 
-    enum class Kind { TAP, SWIPE_START, SWIPE_END, PICTURE }
+    enum class Kind { TAP, SWIPE_START, SWIPE_END, PICTURE, CONDITION }
 
     private val density = context.resources.displayMetrics.density
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -146,7 +147,7 @@ class MarkerView(
     private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 3f * density
-        color = TokenInts.primary
+        color = accent
     }
     private val numberPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = TokenInts.onPrimary
@@ -173,20 +174,20 @@ class MarkerView(
                 c.drawCircle(width / 2f, height / 2f, r - ring.strokeWidth, body)
                 c.drawCircle(width / 2f, height / 2f, r - ring.strokeWidth, ring)
                 numberPaint.textSize = r * 0.9f
-                val label = if (kind == Kind.SWIPE_END) "end" else number.toString()
+                val label = if (kind == Kind.SWIPE_END) "end" else badge
                 if (kind == Kind.SWIPE_END) numberPaint.textSize = r * 0.55f
                 c.drawText(label, width / 2f, height / 2f + numberPaint.textSize * 0.35f, numberPaint)
             }
-            Kind.PICTURE -> {
-                body.color = 0x222DD4BF
+            Kind.PICTURE, Kind.CONDITION -> {
+                body.color = (accent and 0x00FFFFFF) or 0x22000000
                 c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), body)
                 c.drawRect(1.5f * density, 1.5f * density, width - 1.5f * density, height - 1.5f * density, border)
                 // number badge, top left
-                body.color = TokenInts.primary
+                body.color = accent
                 val b = 26f * density
-                c.drawRect(0f, 0f, b, b, body)
+                c.drawRect(0f, 0f, b * (if (badge.length > 1) 1.6f else 1f), b, body)
                 numberPaint.textSize = b * 0.62f
-                c.drawText(number.toString(), b / 2f, b / 2f + numberPaint.textSize * 0.35f, numberPaint)
+                c.drawText(badge, b * (if (badge.length > 1) 1.6f else 1f) / 2f, b / 2f + numberPaint.textSize * 0.35f, numberPaint)
                 // resize corner, bottom right
                 val hs = handleSize() * 0.7f
                 val path = Path().apply {
@@ -206,7 +207,7 @@ class MarkerView(
                 downX = e.rawX; downY = e.rawY
                 startX = lp.x; startY = lp.y; startW = lp.width; startH = lp.height
                 moved = false
-                resizing = kind == Kind.PICTURE && e.x > width - handleSize() && e.y > height - handleSize()
+                resizing = (kind == Kind.PICTURE || kind == Kind.CONDITION) && e.x > width - handleSize() && e.y > height - handleSize()
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = (e.rawX - downX).toInt()

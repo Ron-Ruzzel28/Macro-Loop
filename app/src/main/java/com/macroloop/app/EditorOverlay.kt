@@ -50,7 +50,7 @@ class EditorOverlay(
     private var eyeButton: ToolButton? = null
     private var linesView: LinesView? = null
     private val markers = mutableListOf<MarkerView>()
-    private val owner = HashMap<MarkerView, Int>()
+    private val owner = HashMap<MarkerView, Pair<Int, Int>>() // step index, condition index (-1 = the step itself)
     private var sheet: View? = null
     private var sheetIndex = -1
     private var sheetTab = 0
@@ -114,7 +114,7 @@ class EditorOverlay(
         }
         infoText = info
         row2.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f))
-        row2.addView(ToolButton(ctx, Icon.LIST, "Steps") { openStepsList() }, weight())
+        row2.addView(ToolButton(ctx, Icon.LIST, "List") { openStepsList() }, weight())
         row2.addView(ToolButton(ctx, Icon.SAVE, "Save") { save(); toast("Saved") }, weight())
         row2.addView(ToolButton(ctx, Icon.CLOSE, "Close", TokenInts.danger) { requestClose() }, weight())
         root.addView(row2)
@@ -213,25 +213,39 @@ class EditorOverlay(
             .map { floatArrayOf(it.x.toFloat(), it.y.toFloat(), it.x2.toFloat(), it.y2.toFloat()) }
     }
 
+    private fun letter(j: Int): String = ('a' + j).toString()
+
     private fun rebuildMarkers() {
         clearMarkers()
         val dot = dp(52)
         steps.forEachIndexed { i, s ->
+            val n = (i + 1).toString()
             when (s.type) {
-                StepType.CLICK -> addMarker(MarkerView.Kind.TAP, i + 1, s.x - dot / 2, s.y - dot / 2, dot, dot, i)
+                StepType.CLICK -> addMarker(MarkerView.Kind.TAP, n, s.x - dot / 2, s.y - dot / 2, dot, dot, i)
                 StepType.SWIPE -> {
-                    addMarker(MarkerView.Kind.SWIPE_START, i + 1, s.x - dot / 2, s.y - dot / 2, dot, dot, i)
-                    addMarker(MarkerView.Kind.SWIPE_END, i + 1, s.x2 - dot / 2, s.y2 - dot / 2, dot, dot, i)
+                    addMarker(MarkerView.Kind.SWIPE_START, n, s.x - dot / 2, s.y - dot / 2, dot, dot, i)
+                    addMarker(MarkerView.Kind.SWIPE_END, n, s.x2 - dot / 2, s.y2 - dot / 2, dot, dot, i)
                 }
-                StepType.CLICK_IMAGE -> addMarker(MarkerView.Kind.PICTURE, i + 1, s.boxX, s.boxY, s.boxW, s.boxH, i)
+                StepType.CLICK_IMAGE -> addMarker(MarkerView.Kind.PICTURE, n, s.boxX, s.boxY, s.boxW, s.boxH, i)
                 StepType.WAIT -> Unit
+            }
+            s.conditions.forEachIndexed { j, c ->
+                val accent = if (c.mustAppear) TokenInts.warning else TokenInts.danger
+                addMarker(
+                    MarkerView.Kind.CONDITION, n + letter(j),
+                    c.boxX, c.boxY, c.boxW.coerceAtLeast(dp(48)), c.boxH.coerceAtLeast(dp(48)),
+                    i, j, accent,
+                )
             }
         }
         updateLines()
         applyVisibility(true)
     }
 
-    private fun addMarker(kind: MarkerView.Kind, number: Int, left: Int, top: Int, w: Int, h: Int, stepIndex: Int) {
+    private fun addMarker(
+        kind: MarkerView.Kind, badge: String, left: Int, top: Int, w: Int, h: Int,
+        stepIndex: Int, condIndex: Int = -1, accent: Int = TokenInts.primary,
+    ) {
         val lp = WindowManager.LayoutParams(
             w, h,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -245,14 +259,20 @@ class EditorOverlay(
             x = left
             y = top
         }
-        val v = MarkerView(ctx, kind, number, wm, lp, { markerChanged(it) }, { openSheet(owner[it] ?: return@MarkerView) })
+        val v = MarkerView(ctx, kind, badge, accent, wm, lp, { markerChanged(it) }, { tapped ->
+            val o = owner[tapped]
+            if (o != null) {
+                if (o.second >= 0) openConditionSheet(o.first, o.second) else openSheet(o.first)
+            }
+        })
         wm.addView(v, lp)
         markers.add(v)
-        owner[v] = stepIndex
+        owner[v] = stepIndex to condIndex
     }
 
     private fun markerChanged(v: MarkerView) {
-        val i = owner[v] ?: return
+        val (i, j) = owner[v] ?: return
+        if (i !in steps.indices) return
         val s = steps[i]
         val cx = v.lp.x + v.lp.width / 2
         val cy = v.lp.y + v.lp.height / 2
@@ -260,6 +280,11 @@ class EditorOverlay(
             MarkerView.Kind.TAP, MarkerView.Kind.SWIPE_START -> s.copy(x = cx, y = cy)
             MarkerView.Kind.SWIPE_END -> s.copy(x2 = cx, y2 = cy)
             MarkerView.Kind.PICTURE -> s.copy(boxX = v.lp.x, boxY = v.lp.y, boxW = v.lp.width, boxH = v.lp.height)
+            MarkerView.Kind.CONDITION -> s.copy(
+                conditions = s.conditions.mapIndexed { k, c ->
+                    if (k == j) c.copy(boxX = v.lp.x, boxY = v.lp.y, boxW = v.lp.width, boxH = v.lp.height) else c
+                },
+            )
         }
         dirty = true
         updateLines()
@@ -362,10 +387,10 @@ class EditorOverlay(
         addSheetWindow(root)
     }
 
-    private fun addSheetWindow(root: View) {
+    private fun addSheetWindow(root: View, heightFrac: Double = 0.56) {
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            (screenH * 0.56).toInt(),
+            (screenH * heightFrac).toInt(),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -390,7 +415,7 @@ class EditorOverlay(
         updateInfo()
     }
 
-    private fun buildGeneral(body: LinearLayout, i: Int) {
+    private fun buildGeneralBase(body: LinearLayout, i: Int) {
         val s = steps[i]
         when (s.type) {
             StepType.CLICK -> {
@@ -416,6 +441,200 @@ class EditorOverlay(
                     lp(12),
                 )
             }
+        }
+    }
+
+    private fun buildGeneral(body: LinearLayout, i: Int) {
+        buildGeneralBase(body, i)
+        if (steps[i].type != StepType.WAIT) buildConditions(body, i)
+    }
+
+    /** "Only run this step when..." : pictures that must (or must not) be on screen. */
+    private fun buildConditions(body: LinearLayout, i: Int) {
+        val s = steps[i]
+        body.addView(label("Only run this step when...", 16f, TokenInts.text).apply { setPadding(0, dp(8), 0, 0) }, lp(16))
+        if (s.conditions.isEmpty()) {
+            body.addView(label("Nothing yet. A condition is a picture that must be on screen, or must not be.", 14f, TokenInts.textMuted), lp(4))
+        } else {
+            if (s.conditions.size > 1) {
+                body.addView(toggle("When there are several", { if (steps[i].anyOf) "Any one is enough" else "All must be true" }) {
+                    edit(i) { it.copy(anyOf = !it.anyOf) }
+                }, lp(8))
+            }
+            s.conditions.forEachIndexed { j, c ->
+                val text = "${letter(j)}.  ${c.label}: " + (if (c.mustAppear) "must be on screen" else "must NOT be on screen") + " (${c.threshold}%)"
+                body.addView(Ui.button(ctx, text, TokenInts.surfaceHigh, TokenInts.text) { openConditionSheet(i, j) }, lp(6))
+            }
+        }
+        body.addView(Ui.button(ctx, "Add a condition", TokenInts.surfaceHigh, TokenInts.primary) { addCondition(i) }, lp(8))
+        if (s.conditions.isNotEmpty() && s.type != StepType.CLICK_IMAGE) {
+            body.addView(
+                stepper("Wait for it up to", { "${steps[i].timeoutMs / 1000} s" },
+                    { edit(i) { it.copy(timeoutMs = (it.timeoutMs - 1000).coerceAtLeast(1000)) } },
+                    { edit(i) { it.copy(timeoutMs = (it.timeoutMs + 1000).coerceAtMost(120_000)) } }),
+                lp(8),
+            )
+            body.addView(toggle("If it never happens", { if (steps[i].skipIfMissing) "Skip this step" else "Stop the macro" }) {
+                edit(i) { it.copy(skipIfMissing = !it.skipIfMissing) }
+            }, lp(8))
+        }
+    }
+
+    private fun addCondition(i: Int) {
+        if (!CaptureService.running) {
+            showCaptureNeeded()
+            return
+        }
+        if (!Matcher.ensureLoaded()) {
+            toast("The picture finder could not start.")
+            return
+        }
+        val n = steps[i].conditions.size
+        val w = (screenW * 0.30).toInt()
+        val h = (w * 0.5).toInt()
+        val c = Condition(
+            label = "Condition ${i + 1}${letter(n)}",
+            boxX = ((screenW - w) / 2 + n * dp(24)).coerceAtLeast(0),
+            boxY = ((screenH - h) / 3 + n * dp(24)).coerceAtLeast(0),
+            boxW = w, boxH = h, capW = screenW, capH = screenH,
+        )
+        edit(i) { it.copy(conditions = it.conditions + c) }
+        closeSheet()
+        rebuildMarkers()
+        toast("Move the box over what must be on screen, then tap it.")
+    }
+
+    private fun editCond(i: Int, j: Int, f: (Condition) -> Condition) {
+        edit(i) { st -> st.copy(conditions = st.conditions.mapIndexed { k, c -> if (k == j) f(c) else c }) }
+    }
+
+    private fun openConditionSheet(i: Int, j: Int) {
+        if (i !in steps.indices || j !in steps[i].conditions.indices) return
+        if (steps[i].conditions[j].templateId.isEmpty()) {
+            captureConditionTemplate(i, j) { openConditionSheet(i, j) }
+            return
+        }
+        closeSheet()
+        sheetIndex = i
+        val c = steps[i].conditions[j]
+        val root = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(56))
+            background = GradientDrawable().apply {
+                setColor(0xF51A1D24.toInt())
+                cornerRadii = floatArrayOf(dp(20).toFloat(), dp(20).toFloat(), dp(20).toFloat(), dp(20).toFloat(), 0f, 0f, 0f, 0f)
+            }
+        }
+        val header = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(label("Step ${i + 1}: condition ${letter(j)}", 20f, TokenInts.text), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) { closeSheet(); openSheet(i, 0) })
+        root.addView(header)
+
+        val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        TemplateStore.load(c.templateId)?.let { bmp ->
+            val preview = ImageView(ctx).apply {
+                setImageBitmap(bmp)
+                adjustViewBounds = true
+                maxHeight = dp(80)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setBackgroundColor(TokenInts.surfaceHigh)
+            }
+            body.addView(preview, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        }
+        condResults[i * 100 + j]?.let {
+            body.addView(label(it, 16f, if (it.startsWith("On screen") || it.startsWith("Not on screen, as")) TokenInts.success else TokenInts.warning), lp(8))
+        }
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(
+            Ui.button(ctx, "Capture again", TokenInts.surfaceHigh, TokenInts.text) { captureConditionTemplate(i, j) { openConditionSheet(i, j) } },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        row.addView(
+            Ui.button(ctx, "Test now", TokenInts.primary, TokenInts.onPrimary) { testCondition(i, j) },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(8) },
+        )
+        body.addView(row, lp(8))
+        body.addView(toggle("This picture must be", { if (steps[i].conditions[j].mustAppear) "On screen" else "Not on screen" }) {
+            editCond(i, j) { it.copy(mustAppear = !it.mustAppear) }
+            rebuildMarkers()
+        }, lp(12))
+        body.addView(
+            stepper("How exact?", { "${steps[i].conditions[j].threshold}%" },
+                { editCond(i, j) { it.copy(threshold = (it.threshold - 1).coerceAtLeast(70)) } },
+                { editCond(i, j) { it.copy(threshold = (it.threshold + 1).coerceAtMost(99)) } }),
+            lp(8),
+        )
+        body.addView(toggle("Where to look", { if (steps[i].conditions[j].wholeScreen) "Whole screen" else "Near the box" }) {
+            editCond(i, j) { it.copy(wholeScreen = !it.wholeScreen) }
+        }, lp(8))
+        root.addView(ScrollView(ctx).apply { addView(body) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(8) })
+        root.addView(
+            Ui.button(ctx, "Delete this condition", TokenInts.surfaceHigh, TokenInts.danger) {
+                TemplateStore.delete(c.templateId)
+                edit(i) { st -> st.copy(conditions = st.conditions.filterIndexed { k, _ -> k != j }) }
+                closeSheet()
+                rebuildMarkers()
+                openSheet(i, 0)
+            },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) },
+        )
+        addSheetWindow(root)
+    }
+
+    private val condResults = HashMap<Int, String>()
+
+    private fun captureConditionTemplate(i: Int, j: Int, then: () -> Unit) {
+        scope.launch {
+            val frame = withEditorHidden { CaptureService.grab() }
+            if (frame == null) {
+                toast("Could not see the screen. Try again.")
+                return@launch
+            }
+            val c = steps[i].conditions[j]
+            val x = c.boxX.coerceIn(0, frame.width - 2)
+            val y = c.boxY.coerceIn(0, frame.height - 2)
+            val w = c.boxW.coerceIn(2, frame.width - x)
+            val h = c.boxH.coerceIn(2, frame.height - y)
+            val newId = TemplateStore.save(Bitmap.createBitmap(frame, x, y, w, h))
+            if (c.templateId.isNotEmpty()) TemplateStore.delete(c.templateId)
+            editCond(i, j) { it.copy(templateId = newId, capW = frame.width, capH = frame.height) }
+            condResults.remove(i * 100 + j)
+            then()
+        }
+    }
+
+    private fun testCondition(i: Int, j: Int) {
+        scope.launch {
+            val c = steps[i].conditions[j]
+            val template = TemplateStore.load(c.templateId)
+            if (template == null) {
+                toast("Capture the picture first.")
+                return@launch
+            }
+            val frame = withEditorHidden { CaptureService.grab() }
+            if (frame == null) {
+                toast("Could not see the screen. Try again.")
+                return@launch
+            }
+            val region = if (c.wholeScreen) null
+            else Matcher.nearRegion(c.boxX, c.boxY, c.boxW, c.boxH, 1.0, frame.width, frame.height)
+            val res = withContext(Dispatchers.Default) { Matcher.find(frame, template, region, c.threshold) }
+            DebugState.record(frame, res, c.threshold, c.label)
+            if (!res.tooPlain) showMatchBoxes(listOf(res))
+            val pass = if (c.mustAppear) res.found else !res.found
+            condResults[i * 100 + j] = when {
+                res.tooPlain -> "This picture is too plain to find. Use a bigger box with more detail."
+                res.found && c.mustAppear -> "On screen, ${(res.score * 100).toInt()}%. The condition holds."
+                res.found -> "On screen, ${(res.score * 100).toInt()}%. The condition does NOT hold."
+                c.mustAppear -> "Not on screen (best ${(res.score * 100).toInt()}%). The condition does NOT hold."
+                else -> "Not on screen, as wanted (best ${(res.score * 100).toInt()}%). The condition holds."
+            }.let { if (pass || res.tooPlain) it else it }
+            openConditionSheet(i, j)
+            delay(2500)
+            removeMatchBox()
         }
     }
 
@@ -531,7 +750,10 @@ class EditorOverlay(
             changed()
             openStepsList()
         })
-        header.addView(Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) { closeSheet() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) })
+        header.addView(
+            Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) { closeSheet() },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) },
+        )
         root.addView(header)
 
         val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
@@ -539,25 +761,68 @@ class EditorOverlay(
             body.addView(label("No steps yet. Use the buttons at the top: Tap, Swipe or Picture.", 16f, TokenInts.textMuted), lp(12))
         }
         steps.forEachIndexed { i, s ->
-            val row = LinearLayout(ctx).apply {
+            val card = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                background = Ui.rounded(TokenInts.surfaceHigh, dp(12).toFloat())
+                setPadding(dp(10), dp(8), dp(6), dp(8))
+            }
+            val top = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                background = Ui.rounded(TokenInts.surfaceHigh, dp(12).toFloat())
-                setPadding(dp(12), dp(6), dp(6), dp(6))
             }
-            val text = label("${i + 1}. ${s.describe()}", 14f, TokenInts.text).apply {
+            top.addView(
+                label("${i + 1}", 16f, TokenInts.onPrimary).apply {
+                    gravity = Gravity.CENTER
+                    background = Ui.rounded(TokenInts.primary, dp(8).toFloat())
+                },
+                LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginEnd = dp(8) },
+            )
+            if (s.type == StepType.CLICK_IMAGE) thumb(s.templateId, 56)?.let { top.addView(it, LinearLayout.LayoutParams(dp(56), dp(40)).apply { marginEnd = dp(8) }) }
+            val text = label(s.describe(), 14f, TokenInts.text).apply {
                 isClickable = true
-                setOnClickListener { if (s.type == StepType.WAIT) openSheet(i) else openSheet(i) }
+                setOnClickListener { openSheet(i) }
             }
-            row.addView(text, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            fun small(t: String, color: Int, f: () -> Unit) = Ui.button(ctx, t, Color.TRANSPARENT, color) { f() }.apply { minWidth = dp(44) }
-            row.addView(small("▲", TokenInts.text) { move(i, -1) })
-            row.addView(small("▼", TokenInts.text) { move(i, 1) })
-            row.addView(small("✕", TokenInts.danger) { steps.removeAt(i); changed(); openStepsList() })
-            body.addView(row, lp(8))
+            top.addView(text, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            fun small(t: String, color: Int, f: () -> Unit) = Ui.button(ctx, t, Color.TRANSPARENT, color) { f() }.apply { minWidth = dp(40); setPadding(dp(6), dp(8), dp(6), dp(8)) }
+            top.addView(small("▲", TokenInts.text) { move(i, -1) })
+            top.addView(small("▼", TokenInts.text) { move(i, 1) })
+            top.addView(small("✕", TokenInts.danger) { steps.removeAt(i); changed(); openStepsList() })
+            card.addView(top)
+
+            if (s.conditions.isNotEmpty()) {
+                card.addView(
+                    label(if (s.conditions.size == 1) "Only when" else if (s.anyOf) "Only when ANY of these" else "Only when ALL of these", 12f, TokenInts.success)
+                        .apply { setPadding(dp(38), dp(6), 0, dp(2)) },
+                )
+                s.conditions.forEachIndexed { j, c ->
+                    val row = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(dp(38), dp(2), 0, dp(2))
+                        isClickable = true
+                        setOnClickListener { openConditionSheet(i, j) }
+                    }
+                    thumb(c.templateId, 40)?.let { row.addView(it, LinearLayout.LayoutParams(dp(48), dp(30)).apply { marginEnd = dp(8) }) }
+                    row.addView(
+                        label("${letter(j)}. ${c.label} " + (if (c.mustAppear) "is on screen" else "is NOT on screen") + " (${c.threshold}%)", 13f, TokenInts.textMuted),
+                        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                    )
+                    card.addView(row)
+                }
+            }
+            body.addView(card, lp(8))
         }
         root.addView(ScrollView(ctx).apply { addView(body) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(8) })
-        addSheetWindow(root)
+        addSheetWindow(root, 0.72)
+    }
+
+    private fun thumb(templateId: String, @Suppress("UNUSED_PARAMETER") maxDp: Int): ImageView? {
+        val bmp = TemplateStore.load(templateId) ?: return null
+        return ImageView(ctx).apply {
+            setImageBitmap(bmp)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(TokenInts.surface)
+        }
     }
 
     private fun move(i: Int, d: Int) {
@@ -667,8 +932,8 @@ class EditorOverlay(
             toast("Add a step first.")
             return
         }
-        if (steps.any { it.type == StepType.CLICK_IMAGE && it.templateId.isEmpty() }) {
-            toast("A picture step has no picture yet. Tap its box to capture it.")
+        if (steps.any { st -> (st.type == StepType.CLICK_IMAGE && st.templateId.isEmpty()) || st.conditions.any { it.templateId.isEmpty() } }) {
+            toast("A picture or condition has no picture yet. Tap its box to capture it.")
             return
         }
         val svc = MacroService.instance ?: return

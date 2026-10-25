@@ -3,6 +3,7 @@ package com.macroloop.app
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.os.SystemClock
@@ -154,6 +155,13 @@ class MacroService : AccessibilityService() {
             return null
         }
         if (step.delayMs > 0) delay(step.delayMs)
+        if (step.type != StepType.CLICK_IMAGE && step.conditions.isNotEmpty()) {
+            when (val gate = waitForConditions(macroName, index, step)) {
+                Gate.Open -> Unit
+                Gate.Skip -> return null
+                is Gate.Fail -> return gate.message
+            }
+        }
         repeat(step.repeatCount) {
             when (step.type) {
                 StepType.CLICK -> {
@@ -176,6 +184,76 @@ class MacroService : AccessibilityService() {
         return null
     }
 
+
+    // ---------------------------------------------------------------- conditions
+
+    private sealed class Gate {
+        data object Open : Gate()
+        data object Skip : Gate()
+        data class Fail(val message: String) : Gate()
+    }
+
+    private class CondCheck(val ok: Boolean, val why: String)
+
+    private fun loadConditionTemplates(step: Step): Map<String, Bitmap>? {
+        val out = HashMap<String, Bitmap>()
+        for (c in step.conditions) {
+            out[c.templateId] = TemplateStore.load(c.templateId) ?: return null
+        }
+        return out
+    }
+
+    /** Looks at one frame and says whether the step's conditions hold. */
+    private suspend fun checkConditions(frame: Bitmap, step: Step, templates: Map<String, Bitmap>): CondCheck =
+        withContext(Dispatchers.Default) {
+            val notes = ArrayList<String>()
+            var okCount = 0
+            for (c in step.conditions) {
+                val t = templates[c.templateId] ?: continue
+                val scale = if (c.capW > 0) frame.width.toDouble() / c.capW else 1.0
+                val region = if (c.wholeScreen) null
+                else Matcher.nearRegion(c.boxX, c.boxY, c.boxW, c.boxH, scale, frame.width, frame.height)
+                val r = Matcher.find(frame, t, region, c.threshold, scale)
+                val ok = if (c.mustAppear) r.found else !r.found
+                if (ok) okCount++
+                else notes.add(
+                    if (c.mustAppear) "\"${c.label}\" was not on screen (best ${(r.score * 100).toInt()}%)"
+                    else "\"${c.label}\" was still on screen",
+                )
+            }
+            val pass = if (step.anyOf) okCount > 0 else okCount == step.conditions.size
+            CondCheck(pass, notes.joinToString(" and "))
+        }
+
+    /** Waits until the step's conditions hold, up to the step's time limit. */
+    private suspend fun waitForConditions(macroName: String, index: Int, step: Step): Gate {
+        val capture = CaptureService.instance
+            ?: return Gate.Fail("Stopped: screen capture is off. Open MacroLoop, tap Set up, and turn it on.")
+        val templates = loadConditionTemplates(step)
+            ?: return Gate.Fail("Stopped: a condition in step ${index + 1} has no picture yet. Edit the macro, tap its box and capture it.")
+        capture.fast = true
+        try {
+            val startedAt = SystemClock.elapsedRealtime()
+            var why = ""
+            while (true) {
+                val frame = CaptureService.grab()
+                if (frame != null) {
+                    val check = checkConditions(frame, step, templates)
+                    if (check.ok) return Gate.Open
+                    why = check.why
+                }
+                val elapsed = SystemClock.elapsedRealtime() - startedAt
+                if (elapsed >= step.timeoutMs) break
+                setStatus("$macroName\nStep ${index + 1}: waiting (${elapsed / 1000} s)" + if (why.isNotEmpty()) "\n$why" else "")
+                delay(150)
+            }
+            return if (step.skipIfMissing) Gate.Skip
+            else Gate.Fail("Stopped: step ${index + 1} waited ${step.timeoutMs / 1000} s, but $why.")
+        } finally {
+            capture.fast = false
+        }
+    }
+
     private sealed class PictureOutcome {
         data object Done : PictureOutcome()
         data object Skipped : PictureOutcome()
@@ -188,9 +266,12 @@ class MacroService : AccessibilityService() {
             ?: return PictureOutcome.Failed("Stopped: step ${index + 1} has no picture yet. Edit the macro, tap the box and capture it.")
         val capture = CaptureService.instance
             ?: return PictureOutcome.Failed("Stopped: screen capture is off. Open MacroLoop, tap Set up, and turn it on.")
+        val condTemplates = loadConditionTemplates(step)
+            ?: return PictureOutcome.Failed("Stopped: a condition in step ${index + 1} has no picture yet. Edit the macro, tap its box and capture it.")
         capture.fast = true
         try {
             val startedAt = SystemClock.elapsedRealtime()
+            var condWhy = ""
             var bestScore = 0.0
             var last: Matcher.Result? = null
             var lastCount = 0
@@ -211,7 +292,13 @@ class MacroService : AccessibilityService() {
                         return PictureOutcome.Failed("Stopped: the picture in step ${index + 1} is too plain to find. Pick a bigger area with more detail.")
                     }
                     bestScore = maxOf(bestScore, res.score)
-                    if (res.found) {
+                    var condOk = true
+                    if (res.found && step.conditions.isNotEmpty()) {
+                        val ck = checkConditions(frame, step, condTemplates)
+                        condOk = ck.ok
+                        if (!condOk) condWhy = ck.why
+                    }
+                    if (res.found && condOk) {
                         val prev = last
                         steady = if (prev != null && prev.found && lastCount == hits.size &&
                             kotlin.math.abs(prev.x - res.x) <= 8 && kotlin.math.abs(prev.y - res.y) <= 8
@@ -237,6 +324,9 @@ class MacroService : AccessibilityService() {
                 delay(120)
             }
             return if (step.skipIfMissing) PictureOutcome.Skipped
+            else if (condWhy.isNotEmpty() && bestScore >= step.threshold / 100.0) PictureOutcome.Failed(
+                "Stopped: found \"${step.label}\" but $condWhy for ${step.timeoutMs / 1000} s.",
+            )
             else PictureOutcome.Failed(
                 "Stopped: couldn't find \"${step.label}\" for ${step.timeoutMs / 1000} s. " +
                     "Best match was ${(bestScore * 100).toInt()}%, needed ${step.threshold}%.",
