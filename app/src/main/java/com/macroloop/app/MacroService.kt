@@ -52,6 +52,8 @@ class MacroService : AccessibilityService() {
         instance = this
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         MacroRepository.init(applicationContext)
+        TemplateStore.init(applicationContext)
+        Matcher.ensureLoaded()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
@@ -79,7 +81,7 @@ class MacroService : AccessibilityService() {
         stopRun()
         closeEditor()
         val macro = MacroRepository.get(macroId) ?: return
-        editor = EditorOverlay(this, wm, macro) { closeEditor() }
+        editor = EditorOverlay(this, wm, macro, scope) { closeEditor() }
         editor?.show()
     }
 
@@ -117,6 +119,16 @@ class MacroService : AccessibilityService() {
                                 delay(if (human) Random.nextLong(150, 350) else 100)
                             }
                             StepType.WAIT -> delay(waitTime(step.ms, human))
+                            StepType.CLICK_IMAGE -> {
+                                when (val outcome = runPictureStep(macro.name, i, step, human)) {
+                                    PictureOutcome.Done, PictureOutcome.Skipped ->
+                                        delay(if (human) Random.nextLong(150, 350) else 100)
+                                    is PictureOutcome.Failed -> {
+                                        finish(outcome.message)
+                                        return@launch
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -137,6 +149,69 @@ class MacroService : AccessibilityService() {
         setStatus(message)
         delay(2500)
         removeRunBar()
+    }
+
+
+    private sealed class PictureOutcome {
+        data object Done : PictureOutcome()
+        data object Skipped : PictureOutcome()
+        data class Failed(val message: String) : PictureOutcome()
+    }
+
+    /** Looks for the picture until it is found and steady, or until the time is up. */
+    private suspend fun runPictureStep(macroName: String, index: Int, step: Step, human: Boolean): PictureOutcome {
+        val template = TemplateStore.load(step.templateId)
+            ?: return PictureOutcome.Failed("Stopped: the picture for step ${index + 1} is missing. Edit the macro and add it again.")
+        val capture = CaptureService.instance
+            ?: return PictureOutcome.Failed("Stopped: screen capture is off. Open MacroLoop, tap Set up, and turn it on.")
+        capture.fast = true
+        try {
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            var bestScore = 0.0
+            var last: Matcher.Result? = null
+            var steady = 0
+            while (true) {
+                val frame = CaptureService.grab()
+                if (frame != null) {
+                    val scale = if (step.capW > 0) frame.width.toDouble() / step.capW else 1.0
+                    val region = if (step.wholeScreen) null
+                    else Matcher.nearRegion(step.boxX, step.boxY, step.boxW, step.boxH, scale, frame.width, frame.height)
+                    val res = kotlinx.coroutines.withContext(Dispatchers.Default) {
+                        Matcher.find(frame, template, region, step.threshold, scale)
+                    }
+                    DebugState.record(frame, res, step.threshold, step.label)
+                    if (res.tooPlain) {
+                        return PictureOutcome.Failed("Stopped: the picture in step ${index + 1} is too plain to find. Pick a bigger area with more detail.")
+                    }
+                    bestScore = maxOf(bestScore, res.score)
+                    if (res.found) {
+                        val prev = last
+                        steady = if (prev != null && prev.found &&
+                            kotlin.math.abs(prev.x - res.x) <= 8 && kotlin.math.abs(prev.y - res.y) <= 8
+                        ) steady + 1 else 1
+                        if (steady >= 2) {
+                            val ok = tap(res.centerX, res.centerY, human)
+                            return if (ok) PictureOutcome.Done
+                            else PictureOutcome.Failed("Stopped: the tap on the picture was cancelled by Android.")
+                        }
+                    } else {
+                        steady = 0
+                    }
+                    last = res
+                }
+                val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+                if (elapsed >= step.timeoutMs) break
+                setStatus("$macroName\nStep ${index + 1}: looking for \"${step.label}\" (${elapsed / 1000} s)")
+                delay(120)
+            }
+            return if (step.skipIfMissing) PictureOutcome.Skipped
+            else PictureOutcome.Failed(
+                "Stopped: couldn't find \"${step.label}\" for ${step.timeoutMs / 1000} s. " +
+                    "Best match was ${(bestScore * 100).toInt()}%, needed ${step.threshold}%.",
+            )
+        } finally {
+            capture.fast = false
+        }
     }
 
     private fun humanTiming(): Boolean =

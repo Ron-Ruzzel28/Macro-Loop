@@ -25,6 +25,8 @@ object TokenInts {
     const val textMuted = 0xFFA6ADBB.toInt()
     const val primary = 0xFF2DD4BF.toInt()
     const val onPrimary = 0xFF06231F.toInt()
+    const val success = 0xFF4ADE80.toInt()
+    const val warning = 0xFFFBBF24.toInt()
     const val danger = 0xFFF87171.toInt()
     const val onDanger = 0xFF2B0A0A.toInt()
     const val scrim = 0x99000000.toInt()
