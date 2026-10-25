@@ -21,6 +21,8 @@ data class Step(
     val wholeScreen: Boolean = false,   // false = look near where the picture was picked
     val timeoutMs: Long = 10_000,
     val skipIfMissing: Boolean = false, // false = stop the macro when not found
+    val flexScale: Boolean = false,     // also try slightly bigger and smaller copies of the picture
+    val matchAll: Boolean = false,      // tap every match, top to bottom, not only the best
     val boxX: Int = 0,                  // where the picture box is, in screen pixels
     val boxY: Int = 0,
     val boxW: Int = 0,
@@ -52,6 +54,8 @@ data class Step(
         .put("wholeScreen", wholeScreen)
         .put("timeoutMs", timeoutMs)
         .put("skipIfMissing", skipIfMissing)
+        .put("flexScale", flexScale)
+        .put("matchAll", matchAll)
         .put("boxX", boxX).put("boxY", boxY).put("boxW", boxW).put("boxH", boxH)
         .put("capW", capW).put("capH", capH)
         .put("holdMs", holdMs)
@@ -75,6 +79,8 @@ data class Step(
             wholeScreen = o.optBoolean("wholeScreen", false),
             timeoutMs = o.optLong("timeoutMs", 10_000),
             skipIfMissing = o.optBoolean("skipIfMissing", false),
+            flexScale = o.optBoolean("flexScale", false),
+            matchAll = o.optBoolean("matchAll", false),
             boxX = o.optInt("boxX"), boxY = o.optInt("boxY"),
             boxW = o.optInt("boxW"), boxH = o.optInt("boxH"),
             capW = o.optInt("capW"), capH = o.optInt("capH"),

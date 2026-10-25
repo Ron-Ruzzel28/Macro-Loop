@@ -55,7 +55,6 @@ class EditorOverlay(
     private var sheetIndex = -1
     private var sheetTab = 0
     private var dialog: View? = null
-    private var matchBox: View? = null
     private val results = HashMap<Int, String>()
 
     private fun dp(v: Int) = Ui.dp(ctx, v)
@@ -459,6 +458,12 @@ class EditorOverlay(
         body.addView(toggle("Where to look", { if (steps[i].wholeScreen) "Whole screen" else "Near the box" }) {
             edit(i) { it.copy(wholeScreen = !it.wholeScreen) }
         }, lp(8))
+        body.addView(toggle("Picture size", { if (steps[i].flexScale) "Allow a little bigger or smaller" else "Same size only" }) {
+            edit(i) { it.copy(flexScale = !it.flexScale) }
+        }, lp(8))
+        body.addView(toggle("If it shows up more than once", { if (steps[i].matchAll) "Tap every one, top to bottom" else "Tap the best match only" }) {
+            edit(i) { it.copy(matchAll = !it.matchAll) }
+        }, lp(8))
         body.addView(
             stepper("Look for", { "${steps[i].timeoutMs / 1000} s" },
                 { edit(i) { it.copy(timeoutMs = (it.timeoutMs - 1000).coerceAtLeast(1000)) } },
@@ -601,13 +606,18 @@ class EditorOverlay(
             }
             val region = if (s.wholeScreen) null
             else Matcher.nearRegion(s.boxX, s.boxY, s.boxW, s.boxH, 1.0, frame.width, frame.height)
-            val res = withContext(Dispatchers.Default) { Matcher.find(frame, template, region, s.threshold) }
-            DebugState.record(frame, res, s.threshold, s.label)
-            if (!res.tooPlain) showMatchBox(res)
+            val hits = withContext(Dispatchers.Default) {
+                if (s.matchAll) Matcher.findAll(frame, template, region, s.threshold)
+                else listOf(Matcher.find(frame, template, region, s.threshold, 1.0, s.flexScale))
+            }
+            val res = hits.firstOrNull() ?: Matcher.Result(false, 0.0, 0, 0, 0, 0)
+            DebugState.record(frame, res, s.threshold, s.label, hits.drop(1))
+            if (!res.tooPlain) showMatchBoxes(if (hits.isEmpty()) listOf(res) else hits)
             results[index] = when {
                 res.tooPlain -> "This picture is too plain to find. Use a bigger box with more detail."
-                res.found -> "Found, ${(res.score * 100).toInt()}%"
-                else -> "Not found. Best match was ${(res.score * 100).toInt()}%, needs ${s.threshold}%."
+                s.matchAll && hits.isNotEmpty() -> "Found ${hits.size} (best ${(res.score * 100).toInt()}%) in ${res.ms} ms"
+                res.found -> "Found, ${(res.score * 100).toInt()}% in ${res.ms} ms"
+                else -> "Not found. Best match was ${(res.score * 100).toInt()}%, needs ${s.threshold}% (${res.ms} ms)."
             }
             openSheet(index, 0)
             delay(2500)
@@ -615,35 +625,39 @@ class EditorOverlay(
         }
     }
 
-    private fun showMatchBox(res: Matcher.Result) {
+    private val matchBoxes = mutableListOf<View>()
+
+    private fun showMatchBoxes(list: List<Matcher.Result>) {
         removeMatchBox()
-        val color = if (res.found) TokenInts.success else TokenInts.warning
-        val v = View(ctx).apply {
-            background = GradientDrawable().apply {
-                setColor(Color.TRANSPARENT)
-                setStroke(dp(4), color)
+        for (res in list) {
+            val color = if (res.found) TokenInts.success else TokenInts.warning
+            val v = View(ctx).apply {
+                background = GradientDrawable().apply {
+                    setColor(Color.TRANSPARENT)
+                    setStroke(dp(4), color)
+                }
             }
+            val params = WindowManager.LayoutParams(
+                res.w, res.h,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT,
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = res.x
+                y = res.y
+            }
+            wm.addView(v, params)
+            matchBoxes.add(v)
         }
-        val params = WindowManager.LayoutParams(
-            res.w, res.h,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = res.x
-            y = res.y
-        }
-        wm.addView(v, params)
-        matchBox = v
     }
 
     private fun removeMatchBox() {
-        matchBox?.let { runCatching { wm.removeView(it) } }
-        matchBox = null
+        matchBoxes.forEach { runCatching { wm.removeView(it) } }
+        matchBoxes.clear()
     }
 
     // ================================================================ test run, save, close

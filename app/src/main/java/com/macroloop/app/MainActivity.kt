@@ -8,6 +8,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.media.projection.MediaProjectionManager
 import android.widget.Toast
+import kotlinx.coroutines.launch
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -15,6 +16,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.ui.draw.drawWithContent
@@ -65,6 +68,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_ASK_CAPTURE = "ask_capture"
+        const val EXTRA_SELF_TEST = "self_test"
     }
 
     private var accessibilityOn by mutableStateOf(false)
@@ -97,7 +101,16 @@ class MainActivity : ComponentActivity() {
         captureLauncher.launch(intent)
     }
 
+    private fun runSelfTest() {
+        val dir = filesDir
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch { SelfTest.run(dir) }
+    }
+
     private fun handleIntent(i: Intent?) {
+        if (i?.getBooleanExtra(EXTRA_SELF_TEST, false) == true) {
+            i.removeExtra(EXTRA_SELF_TEST)
+            runSelfTest()
+        }
         if (i?.getBooleanExtra(EXTRA_ASK_CAPTURE, false) == true) {
             i.removeExtra(EXTRA_ASK_CAPTURE)
             returnAfterCapture = true
@@ -294,7 +307,7 @@ class MainActivity : ComponentActivity() {
         var threshold by remember { mutableStateOf(DebugState.thresholdPct.toFloat()) }
         val preview = DebugState.preview
         val res = DebugState.result
-        Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 16.dp)) {
+        Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
             Spacer(Modifier.height(12.dp))
             Text("Picture test", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Tokens.text)
             Text(
@@ -335,7 +348,8 @@ class MainActivity : ComponentActivity() {
                     val score = (res.score * 100).toInt()
                     val pass = res.score >= threshold / 100.0
                     Text(
-                        "\"${DebugState.label}\": best match $score%",
+                        "\"${DebugState.label}\": best match $score% in ${res.ms} ms" +
+                            (if (DebugState.extra.isNotEmpty()) ", plus ${DebugState.extra.size} more" else ""),
                         fontSize = 18.sp, color = Tokens.text, fontWeight = FontWeight.SemiBold,
                     )
                     Text(
@@ -353,7 +367,19 @@ class MainActivity : ComponentActivity() {
                     Text("Try different values to pick a good \"How exact?\" setting.", fontSize = 14.sp, color = Tokens.textMuted)
                 }
             }
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(12.dp))
+            Text("Check the finder", fontSize = 18.sp, color = Tokens.text, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Runs 20 checks on a drawn screen: brighter, darker, noisy, bigger, smaller, missing and repeated pictures. Also measures speed.",
+                fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(vertical = 4.dp),
+            )
+            PrimaryButton(if (SelfTest.running) "Running..." else "Run the self-test", Modifier.fillMaxWidth()) {
+                if (!SelfTest.running) runSelfTest()
+            }
+            if (SelfTest.report.isNotEmpty()) {
+                Text(SelfTest.report, fontSize = 12.sp, color = Tokens.text, modifier = Modifier.padding(top = 8.dp))
+            }
+            Spacer(Modifier.height(16.dp))
             SecondaryButton("Back to my macros", Modifier.fillMaxWidth()) { onBack() }
             Spacer(Modifier.height(8.dp))
         }

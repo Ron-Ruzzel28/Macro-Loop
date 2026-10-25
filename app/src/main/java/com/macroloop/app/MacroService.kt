@@ -193,6 +193,7 @@ class MacroService : AccessibilityService() {
             val startedAt = SystemClock.elapsedRealtime()
             var bestScore = 0.0
             var last: Matcher.Result? = null
+            var lastCount = 0
             var steady = 0
             while (true) {
                 val frame = CaptureService.grab()
@@ -200,28 +201,35 @@ class MacroService : AccessibilityService() {
                     val scale = if (step.capW > 0) frame.width.toDouble() / step.capW else 1.0
                     val region = if (step.wholeScreen) null
                     else Matcher.nearRegion(step.boxX, step.boxY, step.boxW, step.boxH, scale, frame.width, frame.height)
-                    val res = withContext(Dispatchers.Default) {
-                        Matcher.find(frame, template, region, step.threshold, scale)
+                    val hits: List<Matcher.Result> = withContext(Dispatchers.Default) {
+                        if (step.matchAll) Matcher.findAll(frame, template, region, step.threshold, scale)
+                        else listOf(Matcher.find(frame, template, region, step.threshold, scale, step.flexScale))
                     }
-                    DebugState.record(frame, res, step.threshold, step.label)
+                    val res = hits.firstOrNull() ?: Matcher.Result(false, 0.0, 0, 0, 0, 0)
+                    DebugState.record(frame, res, step.threshold, step.label, hits.drop(1))
                     if (res.tooPlain) {
                         return PictureOutcome.Failed("Stopped: the picture in step ${index + 1} is too plain to find. Pick a bigger area with more detail.")
                     }
                     bestScore = maxOf(bestScore, res.score)
                     if (res.found) {
                         val prev = last
-                        steady = if (prev != null && prev.found &&
+                        steady = if (prev != null && prev.found && lastCount == hits.size &&
                             kotlin.math.abs(prev.x - res.x) <= 8 && kotlin.math.abs(prev.y - res.y) <= 8
                         ) steady + 1 else 1
                         if (steady >= 2) {
-                            val ok = tap(res.centerX, res.centerY, human, step.holdMs, step.randomizePx)
-                            return if (ok) PictureOutcome.Done
-                            else PictureOutcome.Failed("Stopped: the tap on the picture was cancelled by Android.")
+                            var allOk = true
+                            for ((n, hit) in hits.withIndex()) {
+                                if (n > 0) delay(if (human) Random.nextLong(150, 350) else 120)
+                                if (!tap(hit.centerX, hit.centerY, human, step.holdMs, step.randomizePx)) allOk = false
+                            }
+                            return if (allOk) PictureOutcome.Done
+                            else PictureOutcome.Failed("Stopped: a tap on the picture was cancelled by Android.")
                         }
                     } else {
                         steady = 0
                     }
                     last = res
+                    lastCount = hits.size
                 }
                 val elapsed = SystemClock.elapsedRealtime() - startedAt
                 if (elapsed >= step.timeoutMs) break

@@ -21,8 +21,11 @@ object DebugState {
         private set
     var label by mutableStateOf("")
         private set
+    var extra by mutableStateOf<List<Matcher.Result>>(emptyList())
+        private set
 
-    fun record(frame: Bitmap, res: Matcher.Result?, thresholdPct: Int, label: String) {
+    fun record(frame: Bitmap, res: Matcher.Result?, thresholdPct: Int, label: String, others: List<Matcher.Result> = emptyList()) {
+        extra = others
         val h = (frame.height * PREVIEW_WIDTH.toFloat() / frame.width).toInt()
         preview = Bitmap.createScaledBitmap(frame, PREVIEW_WIDTH, h, true)
         frameWidth = frame.width
