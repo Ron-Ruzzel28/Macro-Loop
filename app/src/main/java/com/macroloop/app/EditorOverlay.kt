@@ -37,7 +37,14 @@ class EditorOverlay(
     private val macroId = macro.id
     private val macroName = macro.name
     private val repeat = macro.repeat
-    private val steps = macro.steps.toMutableList()
+    private val root = macro.steps.toMutableList()
+    /** The list being edited: the main list, or a branch opened from a step. */
+    private var steps: MutableList<Step> = root
+
+    private class Ctx(val parent: MutableList<Step>, val index: Int, val onSuccess: Boolean)
+
+    private val stack = ArrayList<Ctx>()
+    private var backButton: ToolButton? = null
     private var dirty = false
     private var markersShown = true
 
@@ -114,6 +121,10 @@ class EditorOverlay(
         }
         infoText = info
         row2.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f))
+        val back = ToolButton(ctx, Icon.BACK, "Back") { exitBranch() }
+        back.visibility = View.GONE
+        backButton = back
+        row2.addView(back, weight())
         row2.addView(ToolButton(ctx, Icon.LIST, "List") { openStepsList() }, weight())
         row2.addView(ToolButton(ctx, Icon.SAVE, "Save") { save(); toast("Saved") }, weight())
         row2.addView(ToolButton(ctx, Icon.CLOSE, "Close", TokenInts.danger) { requestClose() }, weight())
@@ -136,7 +147,57 @@ class EditorOverlay(
 
     private fun updateInfo() {
         val n = steps.size
-        infoText?.text = "$macroName\n${if (n == 1) "1 step" else "$n steps"}${if (dirty) " (not saved)" else ""}"
+        val where = if (stack.isEmpty()) macroName else {
+            val sb = StringBuilder(macroName)
+            for (c in stack) {
+                sb.append(" > step ${c.index + 1} ").append(if (c.onSuccess) "on success" else "on fail")
+            }
+            sb.toString()
+        }
+        infoText?.text = "$where\n${if (n == 1) "1 step" else "$n steps"}${if (dirty) " (not saved)" else ""}"
+        backButton?.visibility = if (stack.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    /** The whole macro with every open branch written back in. */
+    private fun snapshotRoot(): List<Step> {
+        var cur: List<Step> = steps.toList()
+        for (ctx in stack.asReversed()) {
+            val p = ctx.parent.toMutableList()
+            p[ctx.index] = if (ctx.onSuccess) p[ctx.index].copy(onSuccess = cur) else p[ctx.index].copy(onFail = cur)
+            cur = p
+        }
+        return cur
+    }
+
+    private fun flat(list: List<Step>): List<Step> = list.flatMap { listOf(it) + flat(it.onSuccess) + flat(it.onFail) }
+
+    private fun enterBranch(i: Int, onSuccess: Boolean) {
+        if (i !in steps.indices) return
+        closeSheet()
+        val s = steps[i]
+        stack.add(Ctx(steps, i, onSuccess))
+        steps = (if (onSuccess) s.onSuccess else s.onFail).toMutableList()
+        results.clear()
+        condResults.clear()
+        rebuildMarkers()
+        updateInfo()
+        toast(
+            if (onSuccess) "Steps here run after step ${i + 1} works."
+            else "Steps here run when step ${i + 1} never finds what it needs.",
+        )
+    }
+
+    private fun exitBranch() {
+        if (stack.isEmpty()) return
+        closeSheet()
+        val ctx = stack.removeAt(stack.lastIndex)
+        val p = ctx.parent
+        p[ctx.index] = if (ctx.onSuccess) p[ctx.index].copy(onSuccess = steps.toList()) else p[ctx.index].copy(onFail = steps.toList())
+        steps = p
+        results.clear()
+        condResults.clear()
+        rebuildMarkers()
+        updateInfo()
     }
 
     // ================================================================ adding steps
@@ -227,7 +288,7 @@ class EditorOverlay(
                     addMarker(MarkerView.Kind.SWIPE_END, n, s.x2 - dot / 2, s.y2 - dot / 2, dot, dot, i)
                 }
                 StepType.CLICK_IMAGE -> addMarker(MarkerView.Kind.PICTURE, n, s.boxX, s.boxY, s.boxW, s.boxH, i)
-                StepType.WAIT -> Unit
+                StepType.WAIT, StepType.STOP_MACRO -> Unit
             }
             s.conditions.forEachIndexed { j, c ->
                 val accent = if (c.mustAppear) TokenInts.warning else TokenInts.danger
@@ -351,12 +412,13 @@ class EditorOverlay(
             StepType.SWIPE -> "Step ${index + 1}: Swipe"
             StepType.CLICK_IMAGE -> "Step ${index + 1}: Find a picture"
             StepType.WAIT -> "Step ${index + 1}: Wait"
+            StepType.STOP_MACRO -> "Step ${index + 1}: Stop the macro"
         }
         header.addView(label(title, 20f, TokenInts.text), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         header.addView(Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) { closeSheet() })
         root.addView(header)
 
-        if (s.type != StepType.WAIT) {
+        if (s.type != StepType.WAIT && s.type != StepType.STOP_MACRO) {
             val tabs = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
             listOf("General", "Action").forEachIndexed { t, name ->
                 val on = t == tab
@@ -433,6 +495,9 @@ class EditorOverlay(
                 )
             }
             StepType.CLICK_IMAGE -> buildPictureGeneral(body, i)
+            StepType.STOP_MACRO -> {
+                body.addView(label("When the macro gets here, it stops.", 16f, TokenInts.text), lp(8))
+            }
             StepType.WAIT -> {
                 body.addView(
                     stepper("Wait", { "${steps[i].ms / 1000.0} s" },
@@ -446,7 +511,10 @@ class EditorOverlay(
 
     private fun buildGeneral(body: LinearLayout, i: Int) {
         buildGeneralBase(body, i)
-        if (steps[i].type != StepType.WAIT) buildConditions(body, i)
+        if (steps[i].type != StepType.WAIT && steps[i].type != StepType.STOP_MACRO) {
+            buildConditions(body, i)
+            buildBranches(body, i)
+        }
     }
 
     /** "Only run this step when..." : pictures that must (or must not) be on screen. */
@@ -478,6 +546,23 @@ class EditorOverlay(
                 edit(i) { it.copy(skipIfMissing = !it.skipIfMissing) }
             }, lp(8))
         }
+    }
+
+    /** "After this step": the On success and On fail lists. */
+    private fun buildBranches(body: LinearLayout, i: Int) {
+        val s = steps[i]
+        body.addView(label("After this step...", 16f, TokenInts.text).apply { setPadding(0, dp(8), 0, 0) }, lp(16))
+        body.addView(
+            label(
+                "On success runs when the step worked. On fail runs when its picture or conditions never showed up. " +
+                    "With nothing in On fail, the macro stops (or skips, if you chose that).",
+                14f, TokenInts.textMuted,
+            ),
+            lp(4),
+        )
+        fun count(n: Int) = if (n == 0) "nothing yet" else if (n == 1) "1 step" else "$n steps"
+        body.addView(Ui.button(ctx, "On success: ${count(s.onSuccess.size)}   >", TokenInts.surfaceHigh, TokenInts.success) { enterBranch(i, true) }, lp(8))
+        body.addView(Ui.button(ctx, "On fail: ${count(s.onFail.size)}   >", TokenInts.surfaceHigh, TokenInts.warning) { enterBranch(i, false) }, lp(8))
     }
 
     private fun addCondition(i: Int) {
@@ -745,16 +830,26 @@ class EditorOverlay(
             gravity = Gravity.CENTER_VERTICAL
         }
         header.addView(label("All steps", 20f, TokenInts.text), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        header.addView(Ui.button(ctx, "Add a wait", TokenInts.surfaceHigh, TokenInts.text) {
-            steps.add(Step(StepType.WAIT, ms = 1000))
-            changed()
-            openStepsList()
-        })
-        header.addView(
-            Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) { closeSheet() },
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) },
-        )
+        header.addView(Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) { closeSheet() })
         root.addView(header)
+        val adders = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        adders.addView(
+            Ui.button(ctx, "Add a wait", TokenInts.surfaceHigh, TokenInts.text) {
+                steps.add(Step(StepType.WAIT, ms = 1000))
+                changed()
+                openStepsList()
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        adders.addView(
+            Ui.button(ctx, "Add a stop", TokenInts.surfaceHigh, TokenInts.text) {
+                steps.add(Step(StepType.STOP_MACRO))
+                changed()
+                openStepsList()
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(8) },
+        )
+        root.addView(adders, lp(8))
 
         val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         if (steps.isEmpty()) {
@@ -809,6 +904,25 @@ class EditorOverlay(
                     )
                     card.addView(row)
                 }
+            }
+            if (s.onSuccess.isNotEmpty() || s.onFail.isNotEmpty()) {
+                val br = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(dp(38), dp(4), 0, 0)
+                }
+                if (s.onSuccess.isNotEmpty()) {
+                    br.addView(
+                        Ui.button(ctx, "On success: ${s.onSuccess.size}  >", TokenInts.surface, TokenInts.success) { enterBranch(i, true) },
+                        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) },
+                    )
+                }
+                if (s.onFail.isNotEmpty()) {
+                    br.addView(
+                        Ui.button(ctx, "On fail: ${s.onFail.size}  >", TokenInts.surface, TokenInts.warning) { enterBranch(i, false) },
+                        LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                    )
+                }
+                card.addView(br)
             }
             body.addView(card, lp(8))
         }
@@ -928,24 +1042,24 @@ class EditorOverlay(
     // ================================================================ test run, save, close
 
     private fun testRun() {
-        if (steps.isEmpty()) {
+        if (snapshotRoot().isEmpty()) {
             toast("Add a step first.")
             return
         }
-        if (steps.any { st -> (st.type == StepType.CLICK_IMAGE && st.templateId.isEmpty()) || st.conditions.any { it.templateId.isEmpty() } }) {
+        if (flat(snapshotRoot()).any { st -> (st.type == StepType.CLICK_IMAGE && st.templateId.isEmpty()) || st.conditions.any { it.templateId.isEmpty() } }) {
             toast("A picture or condition has no picture yet. Tap its box to capture it.")
             return
         }
         val svc = MacroService.instance ?: return
         closeSheet()
         applyVisibility(false)
-        svc.runMacro(Macro(macroId, macroName, steps.toList(), repeat = 1), 2) {
+        svc.runMacro(Macro(macroId, macroName, snapshotRoot(), repeat = 1), 2) {
             applyVisibility(true)
         }
     }
 
     private fun save() {
-        MacroRepository.save(Macro(id = macroId, name = macroName, steps = steps.toList(), repeat = repeat))
+        MacroRepository.save(Macro(id = macroId, name = macroName, steps = snapshotRoot(), repeat = repeat))
         dirty = false
         updateInfo()
     }

@@ -3,7 +3,7 @@ package com.macroloop.app
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class StepType { CLICK, SWIPE, WAIT, CLICK_IMAGE }
+enum class StepType { CLICK, SWIPE, WAIT, CLICK_IMAGE, STOP_MACRO }
 
 /**
  * Something that must (or must not) be on screen before a step runs.
@@ -76,6 +76,9 @@ data class Step(
     // conditions: the step runs only when these hold
     val conditions: List<Condition> = emptyList(),
     val anyOf: Boolean = false,         // false = all must hold, true = any one is enough
+    // branches: steps that run after this one
+    val onSuccess: List<Step> = emptyList(), // when the step worked
+    val onFail: List<Step> = emptyList(),    // when its picture or conditions never showed up
 ) {
     /** One readable line, in plain words. */
     fun describe(): String = when (type) {
@@ -83,6 +86,7 @@ data class Step(
         StepType.SWIPE -> "Swipe from ($x, $y) to ($x2, $y2)"
         StepType.WAIT -> "Wait ${ms / 1000.0} s"
         StepType.CLICK_IMAGE -> "Tap the picture \"$label\" (look for up to ${timeoutMs / 1000} s)"
+        StepType.STOP_MACRO -> "Stop the macro"
     }
 
     fun toJson(): JSONObject = JSONObject()
@@ -105,10 +109,12 @@ data class Step(
         .put("waitNextMs", waitNextMs)
         .put("randomizePx", randomizePx)
         .put("anyOf", anyOf)
+        .put("onSuccess", JSONArray().also { a -> onSuccess.forEach { a.put(it.toJson()) } })
+        .put("onFail", JSONArray().also { a -> onFail.forEach { a.put(it.toJson()) } })
         .put("conditions", JSONArray().also { a -> conditions.forEach { a.put(it.toJson()) } })
 
     companion object {
-        fun fromJson(o: JSONObject) = Step(
+        fun fromJson(o: JSONObject): Step = Step(
             type = StepType.valueOf(o.getString("type")),
             x = o.optInt("x"),
             y = o.optInt("y"),
@@ -133,6 +139,8 @@ data class Step(
             waitNextMs = o.optLong("waitNextMs", 100),
             randomizePx = o.optInt("randomizePx", 0),
             anyOf = o.optBoolean("anyOf", false),
+            onSuccess = o.optJSONArray("onSuccess")?.let { a -> List(a.length()) { fromJson(a.getJSONObject(it)) } } ?: emptyList(),
+            onFail = o.optJSONArray("onFail")?.let { a -> List(a.length()) { fromJson(a.getJSONObject(it)) } } ?: emptyList(),
             conditions = o.optJSONArray("conditions")?.let { a ->
                 List(a.length()) { Condition.fromJson(a.getJSONObject(it)) }
             } ?: emptyList(),

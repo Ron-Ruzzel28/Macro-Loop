@@ -120,7 +120,7 @@ class MacroService : AccessibilityService() {
                 for (round in 1..macro.repeat) {
                     for ((i, step) in macro.steps.withIndex()) {
                         setStatus("${macro.name}\nRound $round of ${macro.repeat}, step ${i + 1} of ${macro.steps.size}")
-                        val problem = runStep(macro.name, i, step, human)
+                        val problem = runStep(macro.name, (i + 1).toString(), step, human)
                         if (problem != null) {
                             finish(problem)
                             return@launch
@@ -148,50 +148,77 @@ class MacroService : AccessibilityService() {
         removeRunBar()
     }
 
-    /** Runs one step with its delay, repeat and wait-next settings. Returns a message if the macro must stop. */
-    private suspend fun runStep(macroName: String, index: Int, step: Step, human: Boolean): String? {
+    /** What happened when a step tried to do its job. */
+    private sealed class Outcome {
+        data object Ok : Outcome()
+
+        /** The picture or condition did not show up in time. A branch or "skip" can handle this. */
+        data class Missing(val message: String) : Outcome()
+
+        /** A problem no branch should hide: setup trouble, a cancelled tap, a too-plain picture. */
+        data class Fatal(val message: String) : Outcome()
+    }
+
+    /** Runs a list of steps (a branch). Returns a message if the macro must stop. */
+    private suspend fun runList(macroName: String, list: List<Step>, human: Boolean, prefix: String): String? {
+        for ((i, step) in list.withIndex()) {
+            val where = "$prefix #${i + 1}"
+            setStatus("$macroName\nStep $where of ${list.size}")
+            val problem = runStep(macroName, where, step, human)
+            if (problem != null) return problem
+        }
+        return null
+    }
+
+    /**
+     * Runs one step with its delay, repeat and wait-after settings, then its branch.
+     * Returns a message if the macro must stop.
+     */
+    private suspend fun runStep(macroName: String, where: String, step: Step, human: Boolean): String? {
         if (step.type == StepType.WAIT) {
             delay(waitTime(step.ms, human))
             return null
         }
+        if (step.type == StepType.STOP_MACRO) return "Stopped: a Stop step ($where) ended the macro."
         if (step.delayMs > 0) delay(step.delayMs)
+
+        var outcome: Outcome = Outcome.Ok
         if (step.type != StepType.CLICK_IMAGE && step.conditions.isNotEmpty()) {
-            when (val gate = waitForConditions(macroName, index, step)) {
-                Gate.Open -> Unit
-                Gate.Skip -> return null
-                is Gate.Fail -> return gate.message
+            outcome = waitForConditions(macroName, where, step)
+        }
+        if (outcome is Outcome.Ok) {
+            for (r in 1..step.repeatCount) {
+                outcome = when (step.type) {
+                    StepType.CLICK ->
+                        if (tap(step.x, step.y, human, step.holdMs, step.randomizePx)) Outcome.Ok
+                        else Outcome.Fatal("Stopped: the tap in step $where was cancelled by Android.")
+                    StepType.SWIPE ->
+                        if (swipe(step, human)) Outcome.Ok
+                        else Outcome.Fatal("Stopped: the swipe in step $where was cancelled by Android.")
+                    StepType.CLICK_IMAGE -> runPictureStep(macroName, where, step, human)
+                    else -> Outcome.Ok
+                }
+                if (outcome !is Outcome.Ok) break
             }
         }
-        repeat(step.repeatCount) {
-            when (step.type) {
-                StepType.CLICK -> {
-                    val ok = tap(step.x, step.y, human, step.holdMs, step.randomizePx)
-                    if (!ok) return "Stopped: the tap in step ${index + 1} was cancelled by Android."
-                }
-                StepType.SWIPE -> {
-                    val ok = swipe(step, human)
-                    if (!ok) return "Stopped: the swipe in step ${index + 1} was cancelled by Android."
-                }
-                StepType.CLICK_IMAGE -> when (val outcome = runPictureStep(macroName, index, step, human)) {
-                    PictureOutcome.Done, PictureOutcome.Skipped -> Unit
-                    is PictureOutcome.Failed -> return outcome.message
-                }
-                StepType.WAIT -> Unit
+
+        return when (val o = outcome) {
+            Outcome.Ok -> {
+                val after = step.waitNextMs + if (human) Random.nextLong(50, 250) else 0L
+                if (after > 0) delay(after)
+                if (step.onSuccess.isNotEmpty()) runList(macroName, step.onSuccess, human, "$where on success") else null
+            }
+            is Outcome.Fatal -> o.message
+            is Outcome.Missing -> when {
+                step.onFail.isNotEmpty() -> runList(macroName, step.onFail, human, "$where on fail")
+                step.skipIfMissing -> null
+                else -> o.message
             }
         }
-        val after = step.waitNextMs + if (human) Random.nextLong(50, 250) else 0L
-        if (after > 0) delay(after)
-        return null
     }
 
 
     // ---------------------------------------------------------------- conditions
-
-    private sealed class Gate {
-        data object Open : Gate()
-        data object Skip : Gate()
-        data class Fail(val message: String) : Gate()
-    }
 
     private class CondCheck(val ok: Boolean, val why: String)
 
@@ -226,11 +253,11 @@ class MacroService : AccessibilityService() {
         }
 
     /** Waits until the step's conditions hold, up to the step's time limit. */
-    private suspend fun waitForConditions(macroName: String, index: Int, step: Step): Gate {
+    private suspend fun waitForConditions(macroName: String, where: String, step: Step): Outcome {
         val capture = CaptureService.instance
-            ?: return Gate.Fail("Stopped: screen capture is off. Open MacroLoop, tap Set up, and turn it on.")
+            ?: return Outcome.Fatal("Stopped: screen capture is off. Open MacroLoop, tap Set up, and turn it on.")
         val templates = loadConditionTemplates(step)
-            ?: return Gate.Fail("Stopped: a condition in step ${index + 1} has no picture yet. Edit the macro, tap its box and capture it.")
+            ?: return Outcome.Fatal("Stopped: a condition in step $where has no picture yet. Edit the macro, tap its box and capture it.")
         capture.fast = true
         try {
             val startedAt = SystemClock.elapsedRealtime()
@@ -239,35 +266,28 @@ class MacroService : AccessibilityService() {
                 val frame = CaptureService.grab()
                 if (frame != null) {
                     val check = checkConditions(frame, step, templates)
-                    if (check.ok) return Gate.Open
+                    if (check.ok) return Outcome.Ok
                     why = check.why
                 }
                 val elapsed = SystemClock.elapsedRealtime() - startedAt
                 if (elapsed >= step.timeoutMs) break
-                setStatus("$macroName\nStep ${index + 1}: waiting (${elapsed / 1000} s)" + if (why.isNotEmpty()) "\n$why" else "")
+                setStatus("$macroName\nStep $where: waiting (${elapsed / 1000} s)" + if (why.isNotEmpty()) "\n$why" else "")
                 delay(150)
             }
-            return if (step.skipIfMissing) Gate.Skip
-            else Gate.Fail("Stopped: step ${index + 1} waited ${step.timeoutMs / 1000} s, but $why.")
+            return Outcome.Missing("Stopped: step $where waited ${step.timeoutMs / 1000} s, but $why.")
         } finally {
             capture.fast = false
         }
     }
 
-    private sealed class PictureOutcome {
-        data object Done : PictureOutcome()
-        data object Skipped : PictureOutcome()
-        data class Failed(val message: String) : PictureOutcome()
-    }
-
     /** Looks for the picture until it is found and steady, or until the time is up. */
-    private suspend fun runPictureStep(macroName: String, index: Int, step: Step, human: Boolean): PictureOutcome {
+    private suspend fun runPictureStep(macroName: String, where: String, step: Step, human: Boolean): Outcome {
         val template = TemplateStore.load(step.templateId)
-            ?: return PictureOutcome.Failed("Stopped: step ${index + 1} has no picture yet. Edit the macro, tap the box and capture it.")
+            ?: return Outcome.Fatal("Stopped: step $where has no picture yet. Edit the macro, tap the box and capture it.")
         val capture = CaptureService.instance
-            ?: return PictureOutcome.Failed("Stopped: screen capture is off. Open MacroLoop, tap Set up, and turn it on.")
+            ?: return Outcome.Fatal("Stopped: screen capture is off. Open MacroLoop, tap Set up, and turn it on.")
         val condTemplates = loadConditionTemplates(step)
-            ?: return PictureOutcome.Failed("Stopped: a condition in step ${index + 1} has no picture yet. Edit the macro, tap its box and capture it.")
+            ?: return Outcome.Fatal("Stopped: a condition in step $where has no picture yet. Edit the macro, tap its box and capture it.")
         capture.fast = true
         try {
             val startedAt = SystemClock.elapsedRealtime()
@@ -289,7 +309,7 @@ class MacroService : AccessibilityService() {
                     val res = hits.firstOrNull() ?: Matcher.Result(false, 0.0, 0, 0, 0, 0)
                     DebugState.record(frame, res, step.threshold, step.label, hits.drop(1))
                     if (res.tooPlain) {
-                        return PictureOutcome.Failed("Stopped: the picture in step ${index + 1} is too plain to find. Pick a bigger area with more detail.")
+                        return Outcome.Fatal("Stopped: the picture in step $where is too plain to find. Pick a bigger area with more detail.")
                     }
                     bestScore = maxOf(bestScore, res.score)
                     var condOk = true
@@ -309,8 +329,8 @@ class MacroService : AccessibilityService() {
                                 if (n > 0) delay(if (human) Random.nextLong(150, 350) else 120)
                                 if (!tap(hit.centerX, hit.centerY, human, step.holdMs, step.randomizePx)) allOk = false
                             }
-                            return if (allOk) PictureOutcome.Done
-                            else PictureOutcome.Failed("Stopped: a tap on the picture was cancelled by Android.")
+                            return if (allOk) Outcome.Ok
+                            else Outcome.Fatal("Stopped: a tap on the picture was cancelled by Android.")
                         }
                     } else {
                         steady = 0
@@ -320,16 +340,15 @@ class MacroService : AccessibilityService() {
                 }
                 val elapsed = SystemClock.elapsedRealtime() - startedAt
                 if (elapsed >= step.timeoutMs) break
-                setStatus("$macroName\nStep ${index + 1}: looking for \"${step.label}\" (${elapsed / 1000} s)")
+                setStatus("$macroName\nStep $where: looking for \"${step.label}\" (${elapsed / 1000} s)")
                 delay(120)
             }
-            return if (step.skipIfMissing) PictureOutcome.Skipped
-            else if (condWhy.isNotEmpty() && bestScore >= step.threshold / 100.0) PictureOutcome.Failed(
-                "Stopped: found \"${step.label}\" but $condWhy for ${step.timeoutMs / 1000} s.",
-            )
-            else PictureOutcome.Failed(
-                "Stopped: couldn't find \"${step.label}\" for ${step.timeoutMs / 1000} s. " +
-                    "Best match was ${(bestScore * 100).toInt()}%, needed ${step.threshold}%.",
+            return Outcome.Missing(
+                if (condWhy.isNotEmpty() && bestScore >= step.threshold / 100.0)
+                    "Stopped: found \"${step.label}\" but $condWhy for ${step.timeoutMs / 1000} s."
+                else
+                    "Stopped: couldn't find \"${step.label}\" for ${step.timeoutMs / 1000} s. " +
+                        "Best match was ${(bestScore * 100).toInt()}%, needed ${step.threshold}%.",
             )
         } finally {
             capture.fast = false
