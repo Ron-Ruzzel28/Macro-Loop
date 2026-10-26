@@ -194,7 +194,11 @@ class MacroService : AccessibilityService() {
         removePlayPanel()
         runMacro(macro, 3) {
             // Back to the Play button when the run ends or is stopped, unless a new run started.
-            if (playMacroId == id && !isRunning()) showPlayPanel(id)
+            // The job is still "active" while this runs, so look again a moment later.
+            scope.launch {
+                delay(150)
+                if (playMacroId == id && !isRunning()) showPlayPanel(id)
+            }
         }
     }
 

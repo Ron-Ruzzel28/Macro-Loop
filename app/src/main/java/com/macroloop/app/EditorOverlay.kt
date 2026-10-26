@@ -1200,7 +1200,7 @@ class EditorOverlay(
         val rootView = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(12), dp(12), dp(8))
-            background = Ui.rounded(0xFA0F1115.toInt(), dp(20).toFloat())
+            background = Ui.rounded(0xFF0F1115.toInt(), dp(20).toFloat())
         }
         rootView.addView(label(macroName, 22f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
         val n = countAll(whole)
@@ -1240,7 +1240,7 @@ class EditorOverlay(
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP
-            y = dp(24)
+            y = dp(28)
         }
         wm.addView(rootView, params)
         panel = rootView
@@ -1296,7 +1296,7 @@ class EditorOverlay(
         val parts = ArrayList<String>()
         if (s.type == StepType.CLICK || s.type == StepType.SWIPE || s.type == StepType.CLICK_IMAGE) {
             parts.add("x${s.repeatCount}")
-            parts.add("wait ${s.delayMs} ms before, ${s.waitNextMs} ms after")
+            parts.add("delay ${s.delayMs} / ${s.waitNextMs} ms")
             if (s.holdMs > 0 && s.type != StepType.SWIPE) parts.add("hold ${s.holdMs} ms")
         }
         if (!s.enabled) parts.add("OFF")
@@ -1528,8 +1528,8 @@ class EditorOverlay(
             if (s.type != StepType.SWIPE) rows.add(Row("Edit tap style") { editTapDialog(i) })
         }
         if (logical) {
-            rows.add(Row("Add condition: picture is on screen") { addConditionFromList(path, i, true) })
-            rows.add(Row("Add condition: picture is NOT on screen") { addConditionFromList(path, i, false) })
+            rows.add(Row("Add condition: picture is there") { addConditionFromList(path, i, true) })
+            rows.add(Row("Add condition: picture is gone") { addConditionFromList(path, i, false) })
             rows.add(Row("Add step if true", TokenInts.success) { openAddPicker(path + (i to true), null) })
             rows.add(Row("Add step if false", TokenInts.warning) { openAddPicker(path + (i to false), null) })
         }
