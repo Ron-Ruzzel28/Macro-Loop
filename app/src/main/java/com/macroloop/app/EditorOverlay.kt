@@ -1050,6 +1050,10 @@ class EditorOverlay(
             toast("A picture or condition has no picture yet. Tap its box to capture it.")
             return
         }
+        if (!CaptureService.running && flat(snapshotRoot()).any { it.type == StepType.CLICK_IMAGE || it.conditions.isNotEmpty() }) {
+            showCaptureNeeded()
+            return
+        }
         val svc = MacroService.instance ?: return
         closeSheet()
         applyVisibility(false)

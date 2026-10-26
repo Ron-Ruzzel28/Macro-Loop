@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.media.projection.MediaProjectionManager
@@ -74,6 +76,7 @@ class MainActivity : ComponentActivity() {
     private var accessibilityOn by mutableStateOf(false)
     private var batteryOk by mutableStateOf(false)
     private var returnAfterCapture = false
+    private var pendingRunId: String? = null
 
     private val captureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val data = r.data
@@ -83,10 +86,13 @@ class MainActivity : ComponentActivity() {
                     .putExtra(CaptureService.EXTRA_CODE, r.resultCode)
                     .putExtra(CaptureService.EXTRA_DATA, data),
             )
-            if (returnAfterCapture) moveTaskToBack(true)
+            val pending = pendingRunId
+            if (pending != null) runPendingMacro(pending)
+            else if (returnAfterCapture) moveTaskToBack(true)
         } else {
             Toast.makeText(this, "Screen capture was not allowed.", Toast.LENGTH_LONG).show()
         }
+        pendingRunId = null
         returnAfterCapture = false
     }
 
@@ -572,8 +578,33 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Add at least one step first. Tap Edit.", Toast.LENGTH_LONG).show()
             return
         }
+        // A macro that looks at the screen needs capture. Ask for it here, then start by itself.
+        if (needsCapture(m.steps) && !CaptureService.running) {
+            pendingRunId = m.id
+            askForCapture()
+            return
+        }
         svc.startRun(m.id)
         moveTaskToBack(true)
+    }
+
+    /** True if any step, branch or condition looks for a picture. */
+    private fun needsCapture(list: List<Step>): Boolean = list.any {
+        it.type == StepType.CLICK_IMAGE || it.conditions.isNotEmpty() ||
+            needsCapture(it.onSuccess) || needsCapture(it.onFail)
+    }
+
+    /** Called once capture is allowed: gives the capture service a moment to start, then runs the macro. */
+    private fun runPendingMacro(id: String) {
+        Handler(Looper.getMainLooper()).postDelayed({
+            val svc = MacroService.instance
+            if (svc == null) {
+                Toast.makeText(this, "Turn on MacroLoop in accessibility settings first.", Toast.LENGTH_LONG).show()
+            } else {
+                svc.startRun(id)
+                moveTaskToBack(true)
+            }
+        }, 700)
     }
 }
 
