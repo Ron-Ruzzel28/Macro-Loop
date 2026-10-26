@@ -72,6 +72,7 @@ class MacroService : AccessibilityService() {
         MacroRepository.init(applicationContext)
         TemplateStore.init(applicationContext)
         Matcher.ensureLoaded()
+        License.init(applicationContext)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
@@ -97,7 +98,15 @@ class MacroService : AccessibilityService() {
     // ---------------------------------------------------------------- editor and play button
 
     /** Opens the round editor button for a macro. Tapping it opens the menu, then the list. */
+    /** True if the licence allows running. If not, says why on screen. */
+    private fun licensed(): Boolean {
+        if (License.allowed(this)) return true
+        Toast.makeText(this, License.message.ifBlank { "MacroLoop is locked. Open the app for details." }, Toast.LENGTH_LONG).show()
+        return false
+    }
+
     fun startEditor(macroId: String) {
+        if (!licensed()) return
         stopRun()
         closePlayChip()
         closeEditor()
@@ -116,6 +125,7 @@ class MacroService : AccessibilityService() {
      * so there is time to open the game or app first.
      */
     fun showPlayChip(macroId: String) {
+        if (!licensed()) return
         val macro = MacroRepository.get(macroId) ?: return
         closeEditor()
         stopRun()
@@ -196,7 +206,27 @@ class MacroService : AccessibilityService() {
         showRunBar()
         runJob = scope.launch {
             val capture = CaptureService.instance
+            var dog: Job? = null
             try {
+                if (!License.allowed(this@MacroService)) {
+                    finish("Stopped: " + License.message)
+                    return@launch
+                }
+                // Refresh the licence in the background when the last answer is getting old.
+                if (License.ageMs(this@MacroService) > License.STALE_MS) {
+                    launch(Dispatchers.IO) { License.checkIn(this@MacroService) }
+                }
+                // While a macro runs, look again every few minutes, so a switch-off or an ended trial stops it.
+                dog = launch {
+                    while (true) {
+                        delay(5 * 60_000L)
+                        if (!License.allowed(this@MacroService)) {
+                            finish("Stopped: " + License.message)
+                            runJob?.cancel()
+                            break
+                        }
+                    }
+                }
                 val problem = preflight(macro.steps)
                 if (problem != null) {
                     finish("Stopped: $problem")
@@ -211,6 +241,7 @@ class MacroService : AccessibilityService() {
             } catch (e: CancellationException) {
                 throw e
             } finally {
+                dog?.cancel()
                 capture?.fast = false
                 onFinished?.invoke()
             }

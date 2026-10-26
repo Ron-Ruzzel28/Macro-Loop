@@ -1,6 +1,8 @@
 package com.macroloop.app
 
 import android.content.Context
+import androidx.compose.ui.text.font.FontFamily
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -149,6 +151,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         MacroRepository.init(applicationContext)
         TemplateStore.init(applicationContext)
+        License.init(applicationContext)
         setContent { MacroLoopTheme { App() } }
         if (savedInstanceState == null) handleIntent(intent)
     }
@@ -156,6 +159,10 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        // The first check, which starts the trial, waits until the person has been asked for their name.
+        if (License.hasAskedName(this)) {
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { License.checkIn(applicationContext) }
+        }
     }
 
     private fun refreshStatus() {
@@ -208,6 +215,8 @@ class MainActivity : ComponentActivity() {
     private fun HomeScreen(onSetup: () -> Unit, onDebug: () -> Unit, onInfo: (String) -> Unit) {
         var showNew by remember { mutableStateOf(false) }
         var menuOpen by remember { mutableStateOf(false) }
+        val homeCtx = LocalContext.current
+        var askName by remember { mutableStateOf(!License.hasAskedName(homeCtx)) }
 
         Column(Modifier.fillMaxSize()) {
             TopBar("MacroLoop", null) {
@@ -220,6 +229,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            LicenseBanner()
             if (!accessibilityOn) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Tokens.surface),
@@ -264,6 +274,32 @@ class MainActivity : ComponentActivity() {
             ) { Text("+", fontSize = 32.sp, color = Tokens.onPrimary) }
         }
 
+        if (askName) {
+            var nm by remember { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { },
+                containerColor = Tokens.surfaceHigh,
+                title = { Text("Who is this phone for?", color = Tokens.text) },
+                text = {
+                    Column {
+                        Text(
+                            "Your name helps the owner know which phone to switch on. MacroLoop sends a short code for this phone and your name to the owner's server. Nothing else leaves your phone.",
+                            color = Tokens.textMuted, fontSize = 14.sp,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(value = nm, onValueChange = { nm = it }, singleLine = true, label = { Text("Your name") })
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        License.setName(homeCtx, nm)
+                        askName = false
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { License.checkIn(homeCtx.applicationContext) }
+                    }) { Text("Continue", color = Tokens.primary, fontSize = 16.sp) }
+                },
+            )
+        }
+
         if (showNew) NewMacroDialog(
             onCreate = { name ->
                 val m = MacroRepository.create(name)
@@ -272,6 +308,58 @@ class MainActivity : ComponentActivity() {
             },
             onCancel = { showNew = false },
         )
+    }
+
+    /** Trial time left, or the lock card with this phone's code for the owner. */
+    @Composable
+    private fun LicenseBanner() {
+        val ctx = LocalContext.current
+        val st = License.state
+        if (License.usable) {
+            if (st == License.State.TRIAL) {
+                Text(
+                    "Trial: ${License.leftText(ctx)} left",
+                    fontSize = 13.sp, color = Tokens.warning,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+            return
+        }
+        val code = remember { License.deviceCode(ctx) }
+        val waiting = st == License.State.UNKNOWN && !License.offline
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Tokens.surface),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Text(
+                    when {
+                        st == License.State.REVOKED -> "This phone is switched off"
+                        waiting -> "Checking your access..."
+                        st == License.State.UNKNOWN -> "MacroLoop needs the internet"
+                        else -> "Access has ended"
+                    },
+                    fontSize = 18.sp, color = if (waiting) Tokens.text else Tokens.danger, fontWeight = FontWeight.SemiBold,
+                )
+                if (License.message.isNotBlank()) Text(License.message, fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
+                if (!waiting) {
+                    Text("Send this code to the owner to switch this phone on:", fontSize = 13.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 10.dp))
+                    Text(code, fontSize = 24.sp, color = Tokens.text, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 4.dp))
+                    Row(Modifier.padding(top = 6.dp)) {
+                        PrimaryButton("Copy code", Modifier.weight(1f)) {
+                            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("MacroLoop code", code))
+                            Toast.makeText(ctx, "Code copied", Toast.LENGTH_SHORT).show()
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        SecondaryButton(if (License.checking) "Checking..." else "Check again", Modifier.weight(1f)) {
+                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { License.checkIn(ctx.applicationContext) }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun firstThumb(m: Macro): ImageBitmap? {
@@ -614,6 +702,10 @@ class MainActivity : ComponentActivity() {
     private fun startMode(m: Macro, mode: Int) {
         if (MacroService.instance == null) {
             Toast.makeText(this, "Turn on MacroLoop in accessibility settings first.", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!License.allowed(this)) {
+            Toast.makeText(this, License.message.ifBlank { "MacroLoop is locked." }, Toast.LENGTH_LONG).show()
             return
         }
         if (mode == 2 && m.steps.isEmpty()) {
