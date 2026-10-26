@@ -56,7 +56,6 @@ class MacroService : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var runJob: Job? = null
     private var runBar: View? = null
-    private var runStatus: TextView? = null
     private var editor: EditorOverlay? = null
     private var playChip: PlayChip? = null
     private var playMacroId: String? = null
@@ -199,7 +198,6 @@ class MacroService : AccessibilityService() {
                 capture?.fast = true
                 // A short pause lets Android finish hiding the editor or the Play button,
                 // so the first tap does not land on a window that is still there.
-                setStatus("${macro.name}: starting")
                 delay(START_SETTLE_MS)
                 val end = FlowEngine(RunHost(macro.name)).run(macro, startList, rounds)
                 finish(end ?: "Finished: ${macro.name}")
@@ -229,10 +227,10 @@ class MacroService : AccessibilityService() {
         removeRunBar()
     }
 
-    private suspend fun finish(message: String) {
-        setStatus(message)
-        delay(2500)
+    /** Ends a run: the stop button goes away at once and the result is shown for a moment as a message. */
+    private fun finish(message: String) {
         removeRunBar()
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     // ---------------------------------------------------------------- the host the engine runs on
@@ -281,7 +279,8 @@ class MacroService : AccessibilityService() {
 
         override fun now(): Long = SystemClock.elapsedRealtime()
 
-        override fun status(text: String) = setStatus(text)
+        // No step-by-step report on screen: it would cover what the macro is looking at and tapping.
+        override fun status(text: String) = Unit
 
         override fun roll(): Int = Random.nextInt(100)
 
@@ -358,7 +357,6 @@ class MacroService : AccessibilityService() {
                 }
                 val elapsed = SystemClock.elapsedRealtime() - startedAt
                 if (elapsed >= step.timeoutMs) break
-                setStatus("$macroName\nStep $where: looking for \"${step.label.ifBlank { "the picture" }}\" (${elapsed / 1000} s)")
                 delay(120)
             }
             flash(listOfNotNull(last), false)
@@ -457,46 +455,68 @@ class MacroService : AccessibilityService() {
 
     // ---------------------------------------------------------------- run bar
 
+    /**
+     * While a macro runs, the only thing on screen is one small round Stop button, where the Play button was.
+     * Drag it out of the way if it covers something; tap it to stop. There is no step-by-step report.
+     */
     private fun showRunBar() {
         removeRunBar()
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(8), dp(8), dp(8))
-            background = Ui.rounded(TokenInts.surfaceHigh, dp(16).toFloat())
+        val size = dp(44)
+        val btn = android.widget.FrameLayout(this).apply {
+            background = Ui.rounded(0xD9F87171.toInt(), size / 2f)
+            alpha = 0.9f
+            contentDescription = "Stop the macro"
         }
-        val status = TextView(this).apply {
-            setTextColor(TokenInts.text)
-            textSize = 14f
-            maxWidth = dp(240)
-        }
-        val stop = Ui.button(this, "Stop", TokenInts.danger, TokenInts.onDanger) { stopRun() }
-        bar.addView(status, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        bar.addView(stop, LinearLayout.LayoutParams(dp(84), dp(48)).apply { marginStart = dp(12) })
-
+        btn.addView(
+            View(this).apply { background = Ui.rounded(0xFF2B0A0A.toInt(), dp(3).toFloat()) },
+            android.widget.FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER),
+        )
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            size, size,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dp(48)
+            gravity = Gravity.TOP or Gravity.START
+            x = playX
+            y = playY
         }
-        wm.addView(bar, lp)
-        runBar = bar
-        runStatus = status
-    }
-
-    private fun setStatus(text: String) {
-        runStatus?.text = text
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        var moved = false
+        btn.setOnTouchListener { _, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; moved = false
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = (e.rawX - downX).toInt()
+                    val dy = (e.rawY - downY).toInt()
+                    if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) moved = true
+                    if (moved) {
+                        lp.x = startX + dx
+                        lp.y = startY + dy
+                        playX = lp.x
+                        playY = lp.y
+                        runCatching { wm.updateViewLayout(btn, lp) }
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP -> if (!moved) {
+                    stopRun()
+                    Toast.makeText(this, "Stopped", Toast.LENGTH_SHORT).show()
+                }
+            }
+            true
+        }
+        wm.addView(btn, lp)
+        runBar = btn
     }
 
     private fun removeRunBar() {
         runBar?.let { runCatching { wm.removeView(it) } }
         runBar = null
-        runStatus = null
     }
 
     private fun dp(v: Int) = Ui.dp(this, v)
