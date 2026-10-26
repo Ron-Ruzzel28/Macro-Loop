@@ -323,6 +323,17 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 )
             }
+            // An approved phone sees when its access ends, once that is within about two months.
+            val leftMs = License.untilMs - System.currentTimeMillis()
+            if (st == License.State.ACTIVE && License.untilMs != 0L && leftMs < 60L * 24 * 60 * 60 * 1000) {
+                val date = java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.ENGLISH).format(java.util.Date(License.untilMs))
+                Text(
+                    "Access until $date  (${License.leftText(ctx)} left)",
+                    fontSize = 13.sp,
+                    color = if (leftMs < 5L * 24 * 60 * 60 * 1000) Tokens.warning else Tokens.textMuted,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
             return
         }
         val code = remember { License.deviceCode(ctx) }
