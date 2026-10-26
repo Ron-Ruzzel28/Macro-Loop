@@ -401,6 +401,7 @@ class EditorOverlay(
     /** The user's own name for the step if it has one, otherwise a plain description. */
     private fun stepTitle(s: Step): String = if (s.name.isNotBlank()) s.name else when (s.type) {
         StepType.CLICK_IMAGE -> "Click image"
+        StepType.LINK -> "Run: " + linkName(s)
         else -> s.describe()
     }
 
