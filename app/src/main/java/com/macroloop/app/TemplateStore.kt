@@ -27,6 +27,13 @@ object TemplateStore {
         return if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
     }
 
+    /** Deletes picture files that no macro uses any more. */
+    fun prune(used: Set<String>) {
+        dir.listFiles()?.forEach { f ->
+            if (f.extension == "png" && f.nameWithoutExtension !in used) f.delete()
+        }
+    }
+
     fun delete(id: String) {
         if (id.isNotEmpty()) File(dir, "$id.png").delete()
     }

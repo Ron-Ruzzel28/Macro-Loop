@@ -58,13 +58,26 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private enum class Screen { HOME, SETUP, DEBUG }
+private enum class Screen { HOME, SETUP, DEBUG, INFO }
 
 class MainActivity : ComponentActivity() {
 
@@ -76,7 +89,8 @@ class MainActivity : ComponentActivity() {
     private var accessibilityOn by mutableStateOf(false)
     private var batteryOk by mutableStateOf(false)
     private var returnAfterCapture = false
-    private var pendingRunId: String? = null
+    private var pendingId: String? = null
+    private var pendingMode = 0            // 1 = Edit Mode, 2 = Play Mode
 
     private val captureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val data = r.data
@@ -86,13 +100,14 @@ class MainActivity : ComponentActivity() {
                     .putExtra(CaptureService.EXTRA_CODE, r.resultCode)
                     .putExtra(CaptureService.EXTRA_DATA, data),
             )
-            val pending = pendingRunId
-            if (pending != null) runPendingMacro(pending)
+            val id = pendingId
+            if (id != null) openMode(pendingMode, id, 700)
             else if (returnAfterCapture) moveTaskToBack(true)
         } else {
             Toast.makeText(this, "Screen capture was not allowed.", Toast.LENGTH_LONG).show()
         }
-        pendingRunId = null
+        pendingId = null
+        pendingMode = 0
         returnAfterCapture = false
     }
 
@@ -154,8 +169,14 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun App() {
         var screen by remember { mutableStateOf(Screen.HOME) }
+        var infoId by remember { mutableStateOf("") }
         when (screen) {
-            Screen.HOME -> HomeScreen(onSetup = { screen = Screen.SETUP }, onDebug = { screen = Screen.DEBUG })
+            Screen.HOME -> HomeScreen(
+                onSetup = { screen = Screen.SETUP },
+                onDebug = { screen = Screen.DEBUG },
+                onInfo = { infoId = it; screen = Screen.INFO },
+            )
+            Screen.INFO -> InfoScreen(infoId) { screen = Screen.HOME }
             Screen.DEBUG -> {
                 BackHandler { screen = Screen.HOME }
                 DebugScreen(onBack = { screen = Screen.HOME })
@@ -168,145 +189,212 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun HomeScreen(onSetup: () -> Unit, onDebug: () -> Unit) {
-        val ctx = LocalContext.current
-        var showNew by remember { mutableStateOf(false) }
-        var deleting by remember { mutableStateOf<Macro?>(null) }
-        var human by remember {
-            mutableStateOf(
-                ctx.getSharedPreferences(MacroService.PREFS, MODE_PRIVATE)
-                    .getBoolean(MacroService.PREF_HUMAN, true),
-            )
+    private fun TopBar(title: String, leading: String?, onLeading: () -> Unit = {}, trailing: @Composable () -> Unit = {}) {
+        Row(
+            Modifier.fillMaxWidth().background(Tokens.primary).statusBarsPadding().height(56.dp).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (leading != null) {
+                Text(leading, fontSize = 24.sp, color = Tokens.onPrimary, modifier = Modifier.clickable { onLeading() }.padding(12.dp))
+            } else {
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(title, fontSize = 22.sp, color = Tokens.onPrimary, modifier = Modifier.weight(1f))
+            trailing()
         }
-        val needsSetup = !accessibilityOn
+    }
 
-        Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 16.dp)) {
-            Spacer(Modifier.height(12.dp))
-            Text("My macros", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Tokens.text)
-            Spacer(Modifier.height(12.dp))
+    @Composable
+    private fun HomeScreen(onSetup: () -> Unit, onDebug: () -> Unit, onInfo: (String) -> Unit) {
+        var showNew by remember { mutableStateOf(false) }
+        var menuOpen by remember { mutableStateOf(false) }
 
-            if (needsSetup) {
+        Column(Modifier.fillMaxSize()) {
+            TopBar("MacroLoop", null) {
+                Text("⚡", fontSize = 22.sp, color = Tokens.onPrimary, modifier = Modifier.clickable { onSetup() }.padding(12.dp))
+                Box {
+                    Text("⋮", fontSize = 24.sp, color = Tokens.onPrimary, modifier = Modifier.clickable { menuOpen = true }.padding(12.dp))
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text("Set up and permissions") }, onClick = { menuOpen = false; onSetup() })
+                        DropdownMenuItem(text = { Text("Picture test (advanced)") }, onClick = { menuOpen = false; onDebug() })
+                    }
+                }
+            }
+            if (!accessibilityOn) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Tokens.surface),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("1 thing needs setup", fontSize = 20.sp, color = Tokens.warning, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "MacroLoop needs permission to tap for you.",
-                            fontSize = 16.sp,
-                            color = Tokens.textMuted,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        Spacer(Modifier.height(12.dp))
+                    Column(Modifier.padding(14.dp)) {
+                        Text("1 thing needs setup", fontSize = 18.sp, color = Tokens.warning, fontWeight = FontWeight.SemiBold)
+                        Text("MacroLoop needs permission to tap for you.", fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
+                        Spacer(Modifier.height(8.dp))
                         PrimaryButton("Set up now", onClick = onSetup)
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-            } else {
-                val captureText = if (CaptureService.running) "Screen capture: on" else "Screen capture: off (needed for pictures)"
-                TextButton(onClick = onSetup, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text("Set up and permissions  ·  $captureText", color = Tokens.primary, fontSize = 14.sp)
-                }
             }
-
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Human-like timing", fontSize = 16.sp, color = Tokens.text)
-                    Text("Small random delays and tap offsets", fontSize = 14.sp, color = Tokens.textMuted)
-                }
-                Switch(
-                    checked = human,
-                    onCheckedChange = {
-                        human = it
-                        ctx.getSharedPreferences(MacroService.PREFS, MODE_PRIVATE)
-                            .edit().putBoolean(MacroService.PREF_HUMAN, it).apply()
-                    },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Tokens.onPrimary,
-                        checkedTrackColor = Tokens.primary,
-                    ),
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-
             if (MacroRepository.macros.isEmpty()) {
-                Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.Center) {
+                Column(Modifier.weight(1f).fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.Center) {
                     Text("Nothing here yet", fontSize = 20.sp, color = Tokens.text, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Tap \"New macro\" to make your first one. You will record it by tapping the spots you want it to tap.",
-                        fontSize = 16.sp,
-                        color = Tokens.textMuted,
-                        modifier = Modifier.padding(top = 4.dp),
+                        "Tap + to make your first macro. Then press EDIT MODE to build it over your game or app.",
+                        fontSize = 15.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 4.dp),
                     )
                 }
             } else {
                 LazyColumn(
                     Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(bottom = 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 96.dp),
                 ) {
-                    items(MacroRepository.macros, key = { it.id }) { m ->
-                        MacroCard(m, onDelete = { deleting = m })
-                    }
+                    items(MacroRepository.macros, key = { it.id }) { m -> MacroRow(m) { onInfo(m.id) } }
                 }
             }
         }
 
-        // Advanced link, bottom left
         Column(
-            Modifier.fillMaxSize().systemBarsPadding().padding(16.dp),
-            verticalArrangement = Arrangement.Bottom,
-            horizontalAlignment = Alignment.Start,
-        ) {
-            TextButton(onClick = onDebug, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text("Advanced: picture test", color = Tokens.textMuted, fontSize = 14.sp)
-            }
-        }
-
-        // New macro button, bottom right
-        Column(
-            Modifier.fillMaxSize().systemBarsPadding().padding(16.dp),
+            Modifier.fillMaxSize().systemBarsPadding().padding(20.dp),
             verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.End,
         ) {
-            ExtendedFloatingActionButton(
-                onClick = { showNew = true },
-                containerColor = Tokens.primary,
-                contentColor = Tokens.onPrimary,
-            ) { Text("New macro", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+            Box(
+                Modifier.size(60.dp).clip(CircleShape).background(Tokens.primary).clickable { showNew = true },
+                contentAlignment = Alignment.Center,
+            ) { Text("+", fontSize = 32.sp, color = Tokens.onPrimary) }
         }
 
         if (showNew) NewMacroDialog(
             onCreate = { name ->
                 val m = MacroRepository.create(name)
                 showNew = false
-                startEditor(m)
+                startMode(m, 1)
             },
             onCancel = { showNew = false },
         )
-        deleting?.let { m ->
+    }
+
+    private fun firstThumb(m: Macro): ImageBitmap? {
+        fun find(list: List<Step>): String? {
+            for (s in list) {
+                if (s.type == StepType.CLICK_IMAGE && s.templateId.isNotEmpty()) return s.templateId
+                find(s.onSuccess)?.let { return it }
+                find(s.onFail)?.let { return it }
+            }
+            return null
+        }
+        val id = find(m.steps) ?: return null
+        return TemplateStore.load(id)?.asImageBitmap()
+    }
+
+    @Composable
+    private fun MacroRow(m: Macro, onInfo: () -> Unit) {
+        val thumb = remember(m.updatedAt, m.steps.size) { firstThumb(m) }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Tokens.surface),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth().clickable { onInfo() },
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(64.dp).clip(RoundedCornerShape(6.dp)).background(Tokens.surfaceHigh),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (thumb != null) {
+                            Image(bitmap = thumb, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                        } else {
+                            Text("M", fontSize = 26.sp, color = Tokens.primary)
+                        }
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text(m.name, fontSize = 20.sp, color = Tokens.text)
+                        if (m.game.isNotBlank()) Text(m.game, fontSize = 14.sp, color = Tokens.textMuted)
+                        Text(
+                            m.version + "  ·  " + (if (m.steps.isEmpty()) "no steps" else m.summary()),
+                            fontSize = 13.sp, color = Tokens.textMuted,
+                        )
+                    }
+                }
+                Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { startMode(m, 1) }, modifier = Modifier.heightIn(min = 44.dp)) {
+                        Text("EDIT MODE", color = Tokens.primary, fontSize = 15.sp, letterSpacing = 1.sp)
+                    }
+                    Spacer(Modifier.width(18.dp))
+                    TextButton(onClick = { startMode(m, 2) }, modifier = Modifier.heightIn(min = 44.dp)) {
+                        Text("PLAY MODE", color = Tokens.primary, fontSize = 15.sp, letterSpacing = 1.sp)
+                    }
+                }
+            }
+        }
+    }
+
+    /** The macro's info page: name, game, version, repeat, delete. Tapping a card opens it. */
+    @Composable
+    private fun InfoScreen(id: String, onBack: () -> Unit) {
+        val m = MacroRepository.get(id)
+        if (m == null) {
+            LaunchedEffect(id) { onBack() }
+            return
+        }
+        var name by remember(id) { mutableStateOf(m.name) }
+        var game by remember(id) { mutableStateOf(m.game) }
+        var version by remember(id) { mutableStateOf(m.version) }
+        var repeat by remember(id) { mutableStateOf(m.repeat.toString()) }
+        var confirmDelete by remember { mutableStateOf(false) }
+        fun save() {
+            MacroRepository.get(id)?.let {
+                MacroRepository.save(
+                    it.copy(
+                        name = name.trim().ifEmpty { "New macro" },
+                        game = game.trim(),
+                        version = version.trim().ifEmpty { "1.0.0" },
+                        repeat = repeat.toIntOrNull()?.coerceIn(1, 9999) ?: 1,
+                    ),
+                )
+            }
+        }
+        BackHandler { save(); onBack() }
+        Column(Modifier.fillMaxSize()) {
+            TopBar("Edit Macro", "←", { save(); onBack() }) {
+                Text("SAVE", fontSize = 15.sp, color = Tokens.onPrimary, modifier = Modifier.clickable { save(); onBack() }.padding(12.dp))
+            }
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(value = game, onValueChange = { game = it }, label = { Text("Game or app") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(value = version, onValueChange = { version = it }, label = { Text("Version") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = repeat, onValueChange = { repeat = it.filter { c -> c.isDigit() }.take(4) },
+                    label = { Text("Repeat the whole macro") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(m.summary(), fontSize = 14.sp, color = Tokens.textMuted)
+                Spacer(Modifier.height(24.dp))
+                TextButton(onClick = { confirmDelete = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Delete this macro", color = Tokens.danger, fontSize = 16.sp)
+                }
+            }
+        }
+        if (confirmDelete) {
             AlertDialog(
-                onDismissRequest = { deleting = null },
+                onDismissRequest = { confirmDelete = false },
                 containerColor = Tokens.surfaceHigh,
                 title = { Text("Delete \"${m.name}\"?", color = Tokens.text) },
                 text = { Text("This removes the macro and its steps.", color = Tokens.textMuted) },
                 confirmButton = {
-                    TextButton(onClick = { MacroRepository.delete(m.id); deleting = null }) {
+                    TextButton(onClick = { MacroRepository.delete(id); confirmDelete = false; onBack() }) {
                         Text("Delete", color = Tokens.danger, fontSize = 16.sp)
                     }
                 },
-                dismissButton = {
-                    TextButton(onClick = { deleting = null }) { Text("Keep it", color = Tokens.text, fontSize = 16.sp) }
-                },
+                dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Keep it", color = Tokens.text, fontSize = 16.sp) } },
             )
         }
     }
-
 
     @Composable
     private fun DebugScreen(onBack: () -> Unit) {
@@ -388,45 +476,6 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.height(16.dp))
             SecondaryButton("Back to my macros", Modifier.fillMaxWidth()) { onBack() }
             Spacer(Modifier.height(8.dp))
-        }
-    }
-
-    @Composable
-    private fun MacroCard(m: Macro, onDelete: () -> Unit) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Tokens.surface),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(Modifier.padding(16.dp)) {
-                Text(m.name, fontSize = 20.sp, color = Tokens.text, fontWeight = FontWeight.SemiBold)
-                Text(m.summary(), fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
-
-                Row(
-                    Modifier.padding(top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Repeat", fontSize = 16.sp, color = Tokens.text, modifier = Modifier.weight(1f))
-                    TextButton(
-                        onClick = { MacroRepository.save(m.copy(repeat = (m.repeat - 1).coerceAtLeast(1))) },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    ) { Text("-", fontSize = 20.sp, color = Tokens.primary) }
-                    Text("${m.repeat}", fontSize = 18.sp, color = Tokens.text)
-                    TextButton(
-                        onClick = { MacroRepository.save(m.copy(repeat = (m.repeat + 1).coerceAtMost(9999))) },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    ) { Text("+", fontSize = 20.sp, color = Tokens.primary) }
-                }
-
-                Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    SecondaryButton("Edit", Modifier.weight(1f)) { startEditor(m) }
-                    Spacer(Modifier.width(8.dp))
-                    PrimaryButton("Run", Modifier.weight(1f)) { startRun(m) }
-                    TextButton(onClick = onDelete, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Text("Delete", color = Tokens.danger, fontSize = 16.sp)
-                    }
-                }
-            }
         }
     }
 
@@ -558,53 +607,39 @@ class MainActivity : ComponentActivity() {
 
     // ------------------------------------------------------------------ actions
 
-    private fun startEditor(m: Macro) {
-        val svc = MacroService.instance
-        if (svc == null) {
+    /**
+     * Edit Mode (1) and Play Mode (2), like Macrorify: ask for screen capture first (when it is off),
+     * then step aside and leave the round button over the phone.
+     */
+    private fun startMode(m: Macro, mode: Int) {
+        if (MacroService.instance == null) {
             Toast.makeText(this, "Turn on MacroLoop in accessibility settings first.", Toast.LENGTH_LONG).show()
             return
         }
-        svc.startEditor(m.id)
-        moveTaskToBack(true)
-    }
-
-    private fun startRun(m: Macro) {
-        val svc = MacroService.instance
-        if (svc == null) {
-            Toast.makeText(this, "Turn on MacroLoop in accessibility settings first.", Toast.LENGTH_LONG).show()
+        if (mode == 2 && m.steps.isEmpty()) {
+            Toast.makeText(this, "This macro has no steps yet. Press EDIT MODE and add some.", Toast.LENGTH_LONG).show()
             return
         }
-        if (m.steps.isEmpty()) {
-            Toast.makeText(this, "Add at least one step first. Tap Edit.", Toast.LENGTH_LONG).show()
-            return
-        }
-        // A macro that looks at the screen needs capture. Ask for it here, then start by itself.
-        if (needsCapture(m.steps) && !CaptureService.running) {
-            pendingRunId = m.id
+        if (!CaptureService.running) {
+            pendingId = m.id
+            pendingMode = mode
             askForCapture()
             return
         }
-        svc.showPlayPanel(m.id)
-        moveTaskToBack(true)
+        openMode(mode, m.id, 0)
     }
 
-    /** True if any step, branch or condition looks for a picture. */
-    private fun needsCapture(list: List<Step>): Boolean = list.any {
-        it.type == StepType.CLICK_IMAGE || it.conditions.isNotEmpty() ||
-            needsCapture(it.onSuccess) || needsCapture(it.onFail)
-    }
-
-    /** Called once capture is allowed: gives the capture service a moment to start, then runs the macro. */
-    private fun runPendingMacro(id: String) {
+    /** Opens the round button for a mode. [waitMs] gives a just-started capture service a moment. */
+    private fun openMode(mode: Int, id: String, waitMs: Long) {
         Handler(Looper.getMainLooper()).postDelayed({
             val svc = MacroService.instance
             if (svc == null) {
                 Toast.makeText(this, "Turn on MacroLoop in accessibility settings first.", Toast.LENGTH_LONG).show()
             } else {
-                svc.showPlayPanel(id)
+                if (mode == 1) svc.startEditor(id) else svc.showPlayChip(id)
                 moveTaskToBack(true)
             }
-        }, 700)
+        }, waitMs)
     }
 }
 

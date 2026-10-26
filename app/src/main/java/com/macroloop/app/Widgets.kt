@@ -15,7 +15,7 @@ import kotlin.math.abs
 import kotlin.math.max
 
 /** Icons for the editor toolbar. Drawn here, so there are no image files. */
-enum class Icon { TAP, SWIPE, PICTURE, PLAY, EYE, EYE_OFF, LIST, SAVE, CLOSE, BACK, PLUS, SHRINK, MORE }
+enum class Icon { TAP, SWIPE, PICTURE, PLAY, EYE, EYE_OFF, LIST, SAVE, CLOSE, BACK, PLUS, SHRINK, MORE, GEAR, CHECK, REDO, COPY, PENCIL }
 
 class IconView(context: Context, var icon: Icon, private val color: Int) : View(context) {
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -80,6 +80,35 @@ class IconView(context: Context, var icon: Icon, private val color: Int) : View(
                 c.drawLine(78f, 50f, 24f, 50f, stroke)
                 val p = Path().apply { moveTo(46f, 28f); lineTo(24f, 50f); lineTo(46f, 72f) }
                 c.drawPath(p, stroke)
+            }
+            Icon.GEAR -> {
+                c.drawCircle(50f, 50f, 22f, stroke)
+                c.drawCircle(50f, 50f, 8f, fill)
+                for (k in 0 until 8) {
+                    val a = Math.toRadians(k * 45.0)
+                    c.drawLine(
+                        (50 + 28 * Math.cos(a)).toFloat(), (50 + 28 * Math.sin(a)).toFloat(),
+                        (50 + 38 * Math.cos(a)).toFloat(), (50 + 38 * Math.sin(a)).toFloat(), stroke,
+                    )
+                }
+            }
+            Icon.CHECK -> {
+                val p = Path().apply { moveTo(20f, 52f); lineTo(42f, 74f); lineTo(80f, 28f) }
+                c.drawPath(p, stroke)
+            }
+            Icon.REDO -> {
+                c.drawArc(RectF(22f, 22f, 78f, 78f), -40f, 280f, false, stroke)
+                val p = Path().apply { moveTo(66f, 14f); lineTo(80f, 30f); lineTo(60f, 34f) }
+                c.drawPath(p, stroke)
+            }
+            Icon.COPY -> {
+                c.drawRoundRect(RectF(30f, 30f, 80f, 82f), 6f, 6f, stroke)
+                c.drawRoundRect(RectF(18f, 16f, 62f, 66f), 6f, 6f, stroke)
+            }
+            Icon.PENCIL -> {
+                c.drawLine(24f, 76f, 70f, 30f, stroke)
+                c.drawLine(24f, 76f, 24f, 62f, stroke)
+                c.drawLine(24f, 76f, 38f, 76f, stroke)
             }
             Icon.SHRINK -> {
                 c.drawLine(24f, 24f, 46f, 46f, stroke)

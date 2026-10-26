@@ -121,6 +121,8 @@ object SelfTest {
             val failed = cases.count { !it.ok }
             lines += "Accuracy: ${cases.size - failed} of ${cases.size} cases passed"
             for (c in cases) lines += "${if (c.ok) "PASS" else "FAIL"}  ${c.name}\n      expected: ${c.expect}\n      got: ${c.detail}"
+            lines += ""
+            lines += LogicTest.run()
             report = lines.joinToString("\n")
         } catch (e: Throwable) {
             report = "Self-test crashed: ${e.javaClass.simpleName}: ${e.message}"
