@@ -51,6 +51,9 @@ interface StepHost {
 
     fun status(text: String)
 
+    /** A new look at a step's conditions begins: forget the colours that "changes" conditions compare against. */
+    fun resetBaselines() {}
+
     /** A number from 0 to 99, for Random True. */
     fun roll(): Int
 
@@ -199,18 +202,21 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
 
     /** Waits until the step's conditions hold. Only picture conditions can change while waiting. */
     private suspend fun waitConditions(step: Step, where: String, prevOk: Boolean, state: RunState): Outcome {
-        val rolls = step.conditions.map { if (it.kind == ConditionKind.RANDOM) host.roll() else 0 }
-        val hasImage = step.conditions.any { it.kind == ConditionKind.IMAGE }
+        val conds = step.conditions.filter { it.enabled }
+        if (conds.isEmpty()) return Outcome.Ok
+        val rolls = conds.map { if (it.kind == ConditionKind.RANDOM) host.roll() else 0 }
+        val hasImage = conds.any { it.kind == ConditionKind.IMAGE || it.kind == ConditionKind.COLOR || it.kind == ConditionKind.TEXT }
+        host.resetBaselines()
         val started = host.now()
         var why = ""
         while (true) {
             var holds = 0
             val notes = ArrayList<String>()
-            step.conditions.forEachIndexed { k, c ->
+            conds.forEachIndexed { k, c ->
                 val ok: Boolean
                 val note: String
                 when (c.kind) {
-                    ConditionKind.IMAGE -> host.imageHolds(c).let { ok = it.holds; note = it.note }
+                    ConditionKind.IMAGE, ConditionKind.COLOR, ConditionKind.TEXT -> host.imageHolds(c).let { ok = it.holds; note = it.note }
                     ConditionKind.ACTION_RESULT -> {
                         ok = prevOk == c.resultOk
                         note = if (c.resultOk) "the step before did not work" else "the step before worked"
@@ -226,9 +232,9 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                 }
                 if (ok) holds++ else notes.add(note)
             }
-            val pass = if (step.anyOf) holds > 0 else holds == step.conditions.size
+            val pass = if (step.anyOf) holds > 0 else holds == conds.size
             if (pass) {
-                step.conditions.forEachIndexed { k, c -> if (c.kind == ConditionKind.ONCE) state.onceUsed.add(step.id + "#" + k) }
+                conds.forEachIndexed { k, c -> if (c.kind == ConditionKind.ONCE) state.onceUsed.add(step.id + "#" + k) }
                 return Outcome.Ok
             }
             why = notes.joinToString(" and ")

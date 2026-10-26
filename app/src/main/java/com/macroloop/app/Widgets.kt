@@ -219,7 +219,7 @@ class MarkerView(
     private var moved = false
     private var resizing = false
 
-    private fun handleSize() = 28f * density
+    private fun handleSize() = minOf(28f * density, minOf(width, height) * 0.4f).coerceAtLeast(6f)
 
     override fun onDraw(c: Canvas) {
         when (kind) {
@@ -239,7 +239,7 @@ class MarkerView(
                 c.drawRect(1.5f * density, 1.5f * density, width - 1.5f * density, height - 1.5f * density, border)
                 // number badge, top left
                 body.color = accent
-                val b = 26f * density
+                val b = minOf(26f * density, minOf(width, height) * 0.45f)
                 c.drawRect(0f, 0f, b * (if (badge.length > 1) 1.6f else 1f), b, body)
                 numberPaint.textSize = b * 0.62f
                 c.drawText(badge, b * (if (badge.length > 1) 1.6f else 1f) / 2f, b / 2f + numberPaint.textSize * 0.35f, numberPaint)
@@ -270,8 +270,8 @@ class MarkerView(
                 if (abs(dx) > 10 || abs(dy) > 10) moved = true
                 if (moved) {
                     if (resizing) {
-                        lp.width = max(startW + dx, (48 * density).toInt())
-                        lp.height = max(startH + dy, (48 * density).toInt())
+                        lp.width = max(startW + dx, 8)
+                        lp.height = max(startH + dy, 8)
                     } else {
                         lp.x = startX + dx
                         lp.y = startY + dy

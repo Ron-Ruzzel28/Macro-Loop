@@ -151,6 +151,14 @@ object LogicTest {
             )
         }
 
+        check("A condition that is turned off is skipped, so the step runs", listOf("a", "b"),
+            setup = { it.script["a"] = Outcome.Missing("not found") }) {
+            macro(
+                step("a") { it.copy(skipIfMissing = true) },
+                step("b") { it.copy(conditions = listOf(Condition(kind = ConditionKind.ACTION_RESULT, resultOk = true, enabled = false))) },
+            )
+        }
+
         check("Once True runs once, even over three rounds", listOf("o", "a", "a", "a"), rounds = 3) {
             macro(
                 step("o") { it.copy(skipIfMissing = true, conditions = listOf(Condition(kind = ConditionKind.ONCE))) },

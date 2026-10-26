@@ -9,7 +9,7 @@ enum class StepType {
     TOAST, OPEN_APP,
 }
 
-enum class ConditionKind { IMAGE, ACTION_RESULT, RANDOM, ONCE }
+enum class ConditionKind { IMAGE, ACTION_RESULT, RANDOM, ONCE, COLOR, TEXT }
 
 /**
  * Something that has to be true before a step runs.
@@ -17,6 +17,8 @@ enum class ConditionKind { IMAGE, ACTION_RESULT, RANDOM, ONCE }
  *  ACTION_RESULT the step before it worked (resultOk = true) or did not (false)
  *  RANDOM        true by chance, percent of the time
  *  ONCE          true only the first time during one run
+ *  COLOR         a colour is in an area (or whole screen); with changes = true, the area's colour has changed since it was first looked at
+ *  TEXT          the words are on screen (mustAppear = false: they are not)
  */
 data class Condition(
     val kind: ConditionKind = ConditionKind.IMAGE,
@@ -33,6 +35,11 @@ data class Condition(
     val capH: Int = 0,
     val resultOk: Boolean = true,       // ACTION_RESULT
     val percent: Int = 50,              // RANDOM
+    val enabled: Boolean = true,        // false = skipped, but kept in the list
+    val color: Int = 0,                 // COLOR: the colour to look for (ARGB)
+    val tolerance: Int = 20,            // COLOR: how far a colour may be from it, in percent
+    val changes: Boolean = false,       // COLOR: true when it is the area's colour changing that counts
+    val text: String = "",              // TEXT: the words to look for
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("kind", kind.name)
@@ -42,6 +49,8 @@ data class Condition(
         .put("boxX", boxX).put("boxY", boxY).put("boxW", boxW).put("boxH", boxH)
         .put("capW", capW).put("capH", capH)
         .put("resultOk", resultOk).put("percent", percent)
+        .put("enabled", enabled).put("color", color).put("tolerance", tolerance)
+        .put("changes", changes).put("text", text)
 
     companion object {
         fun fromJson(o: JSONObject) = Condition(
@@ -56,6 +65,11 @@ data class Condition(
             capW = o.optInt("capW"), capH = o.optInt("capH"),
             resultOk = o.optBoolean("resultOk", true),
             percent = o.optInt("percent", 50),
+            enabled = o.optBoolean("enabled", true),
+            color = o.optInt("color", 0),
+            tolerance = o.optInt("tolerance", 20),
+            changes = o.optBoolean("changes", false),
+            text = o.optString("text", ""),
         )
     }
 }
@@ -226,6 +240,7 @@ data class Macro(
     val version: String = "1.0.0",
     val runOnly: Boolean = false,
     val sharedBy: String = "",
+    val landscape: Boolean = false,     // the way the phone is held when this macro runs
 ) {
     fun summary(): String {
         val s = if (steps.size == 1) "1 step" else "${steps.size} steps"
@@ -242,6 +257,7 @@ data class Macro(
         .put("version", version)
         .put("runOnly", runOnly)
         .put("sharedBy", sharedBy)
+        .put("landscape", landscape)
         .put("steps", JSONArray().also { a -> steps.forEach { a.put(it.toJson()) } })
 
     companion object {
@@ -256,6 +272,7 @@ data class Macro(
                 version = o.optString("version", "1.0.0"),
                 runOnly = o.optBoolean("runOnly", false),
                 sharedBy = o.optString("sharedBy", ""),
+                landscape = o.optBoolean("landscape", false),
                 steps = List(arr.length()) { Step.fromJson(arr.getJSONObject(it)) },
             )
         }

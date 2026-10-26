@@ -125,6 +125,8 @@ object SelfTest {
             lines += LogicTest.run()
             lines += ""
             lines += MacroShare.selfTest()
+            lines += ""
+            lines += ScreenCheck.selfTest()
             report = lines.joinToString("\n")
         } catch (e: Throwable) {
             report = "Self-test crashed: ${e.javaClass.simpleName}: ${e.message}"

@@ -1,6 +1,7 @@
 package com.macroloop.app
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -61,9 +62,9 @@ class EditorOverlay(
     private var dirty = false
     private var clipboard: Step? = null
 
-    private val screen = wm.currentWindowMetrics.bounds
-    private val screenW = screen.width()
-    private val screenH = screen.height()
+    // read fresh each time, so a turned phone gets menus that fit
+    private val screenW: Int get() = wm.currentWindowMetrics.bounds.width()
+    private val screenH: Int get() = wm.currentWindowMetrics.bounds.height()
 
     private var chip: View? = null
     private var chipX = Ui.dp(ctx, 12)
@@ -140,6 +141,14 @@ class EditorOverlay(
     // ================================================================ lifecycle and the hand button
 
     fun show() = addChip()
+
+    /** The phone was turned: rebuild what is open so it fits the new size. */
+    fun onRotated() {
+        closeMenu()
+        if (capBox != null) { removeCapture() }
+        if (panel != null) refreshPanel()
+        else if (chip != null) { rm(chip); chip = null; chipX = chipX.coerceIn(0, (screenW - dp(60)).coerceAtLeast(0)); chipY = chipY.coerceIn(0, (screenH - dp(100)).coerceAtLeast(0)); addChip() }
+    }
 
     fun dismiss() {
         removeFlash()
@@ -331,7 +340,7 @@ class EditorOverlay(
         } else {
             renderSteps(body, root, emptyList(), "")
         }
-        val scroll = MaxHeightScrollView(ctx, (screenH * 0.8).toInt()).apply {
+        val scroll = MaxHeightScrollView(ctx, minOf((screenH * 0.8).toInt(), screenH - dp(130))).apply {
             addView(body)
             isVerticalScrollBarEnabled = true
         }
@@ -520,7 +529,7 @@ class EditorOverlay(
         }
         line.addView(label("Image", 13f, TokenInts.text))
         thumb(templateId)?.let { line.addView(it, LinearLayout.LayoutParams(dp(68), dp(30)).apply { marginStart = dp(6); marginEnd = dp(6) }) }
-        line.addView(label("[${if (appear) "Appear" else "Disappear"}] [$pct%]", 12f, TokenInts.textMuted))
+        line.addView(label("[${if (appear) "Appears" else "Not appear"}] [$pct%]", 12f, TokenInts.textMuted))
         return line
     }
 
@@ -529,6 +538,26 @@ class EditorOverlay(
         ConditionKind.ACTION_RESULT -> label("Action Result  [${if (c.resultOk) "Success" else "Failed"}]", 13f, TokenInts.text) to null
         ConditionKind.RANDOM -> label("Random True  [${c.percent}%]", 13f, TokenInts.text) to null
         ConditionKind.ONCE -> label("Once True", 13f, TokenInts.text) to null
+        ConditionKind.COLOR -> colorContent(c) to (if (c.changes) "[Area colour]" else if (c.wholeScreen) "[Whole Screen]" else "[Captured Location]")
+        ConditionKind.TEXT -> label("Text \"${c.text}\"  [${if (c.mustAppear) "Appears" else "Not appear"}]", 13f, TokenInts.text) to
+            (if (c.wholeScreen) "[Whole Screen]" else "[Captured Location]")
+    }.let { (v, second) ->
+        if (c.enabled) v to second else { v.alpha = 0.4f; v to "[Off]" + (second?.let { "  $it" } ?: "") }
+    }
+
+    private fun colorContent(c: Condition): View {
+        val line = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        line.addView(label("Colour", 13f, TokenInts.text))
+        if (!c.changes) {
+            line.addView(View(ctx).apply { background = Ui.rounded(c.color or (0xFF shl 24), dp(4).toFloat()) },
+                LinearLayout.LayoutParams(dp(30), dp(22)).apply { marginStart = dp(6); marginEnd = dp(6) })
+        }
+        val what = if (c.changes) "Changes" else if (c.mustAppear) "Appears" else "Not appear"
+        line.addView(label("[$what] [${c.tolerance}%]", 12f, TokenInts.textMuted).apply { if (c.changes) setPadding(dp(6), 0, 0, 0) })
+        return line
     }
 
     private fun buildCard(s: Step, ref: Ref, num: String, cards: List<View>): View {
@@ -587,8 +616,8 @@ class EditorOverlay(
                 tree.addView(chipRow)
             }
             val (content, second) = conditionContent(c)
-            val ok = c.kind != ConditionKind.IMAGE || c.mustAppear
-            tree.addView(treeRow(if (ok) "✓" else "✕", ok, content, second) { openConditionMenu(ref, j) })
+            val ok = c.changes || c.mustAppear || (c.kind != ConditionKind.IMAGE && c.kind != ConditionKind.COLOR && c.kind != ConditionKind.TEXT)
+            tree.addView(treeRow(if (!c.enabled) "–" else if (ok) "✓" else "✕", ok && c.enabled, content, second) { openConditionMenu(ref, j) })
             rows++
         }
         s.holdUntil?.let { h ->
@@ -694,7 +723,7 @@ class EditorOverlay(
                 },
             )
         }
-        box.addView(MaxHeightScrollView(ctx, (screenH * 0.78).toInt()).apply { addView(list) })
+        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.78).toInt(), screenH - dp(230))).apply { addView(list) })
         val w = if (anchor != null) dp(260) else (screenW * 0.9).toInt()
         val p = if (anchor != null) {
             params(w, WindowManager.LayoutParams.WRAP_CONTENT, anchor.first.coerceIn(0, screenW - w), anchor.second.coerceIn(0, screenH - dp(300)), outside = true)
@@ -919,7 +948,7 @@ class EditorOverlay(
                 Triple(Icon.LINK, "Run Step (link)", pick(StepType.LINK)),
             ),
         )
-        box.addView(MaxHeightScrollView(ctx, (screenH * 0.72).toInt()).apply { addView(body) })
+        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.72).toInt(), screenH - dp(210))).apply { addView(body) })
         box.addView(textButton("CANCEL") { closeMenu() }.apply { gravity = Gravity.END }, lp(6))
         val w = (screenW * 0.94).toInt()
         val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, dp(70), outside = true)
@@ -1279,8 +1308,19 @@ class EditorOverlay(
             listOf(
                 Row("Picture appears", icon = Icon.PICTURE) { closeMenu(); addHoldUntil(ref, true) },
                 Row("Picture disappears", icon = Icon.PICTURE) { closeMenu(); addHoldUntil(ref, false) },
+                Row("Colour appears", icon = Icon.PENCIL) { holdColor(ref, 0) },
+                Row("Colour disappears", icon = Icon.PENCIL) { holdColor(ref, 1) },
+                Row("Colour changes", icon = Icon.REDO) { holdColor(ref, 2) },
             ),
         )
+    }
+
+    private fun holdColor(ref: Ref, mode: Int) {
+        closeMenu()
+        addColorCondition(ref, mode) { c ->
+            edit(ref) { it.copy(holdUntil = c.copy(label = "Hold ${ref.index + 1}"), clicks = 1) }
+            refreshPanel()
+        }
     }
 
     private fun addHoldUntil(ref: Ref, appear: Boolean) {
@@ -1299,13 +1339,33 @@ class EditorOverlay(
         val s = stepAt(ref) ?: return
         val h = s.holdUntil ?: return
         fun upd(f: (Condition) -> Condition) = edit(ref) { st -> st.copy(holdUntil = st.holdUntil?.let(f)) }
+        if (h.kind == ConditionKind.COLOR) {
+            val rows = ArrayList<Row>()
+            colorRows(rows, h, ::upd)
+            rows.add(Row("Edit Longest Hold", icon = Icon.PENCIL) {
+                var secs: EditText? = null
+                showForm("Longest Hold", "If it has not happened by then, the press is let go and the step counts as FALSE.", { b ->
+                    secs = field(b, "Seconds (1 to 55)", (s.holdMaxMs / 1000).toString())
+                }, { edit(ref) { it.copy(holdMaxMs = (secs?.text.toString().toLongOrNull() ?: 10L).coerceIn(1L, 55L) * 1000) } })
+            })
+            rows.add(Row("Remove Hold Until", TokenInts.danger, Icon.CLOSE) { closeMenu(); edit(ref) { it.copy(holdUntil = null) }; refreshPanel() })
+            showMenu("Hold until", rows)
+            return
+        }
         showMenu(
             "Hold until",
             listOf(
-                Row("Change Image", icon = Icon.PENCIL) {
+                Row("Re-crop Image", icon = Icon.PENCIL) {
                     closeMenu()
                     val start = if (h.boxW > 0) Rect(h.boxX, h.boxY, h.boxX + h.boxW, h.boxY + h.boxH) else null
                     startCapture(start) { box, id, fw, fh ->
+                        upd { it.copy(templateId = id, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
+                        refreshPanel()
+                    }
+                },
+                Row("Change Image", icon = Icon.PENCIL) {
+                    closeMenu()
+                    startCapture(null) { box, id, fw, fh ->
                         upd { it.copy(templateId = id, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
                         refreshPanel()
                     }
@@ -1376,7 +1436,8 @@ class EditorOverlay(
         showMenu(
             "Image",
             listOf(
-                Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeImage(ref) },
+                Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); changeImage(ref, true) },
+                Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeImage(ref, false) },
                 Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(s.threshold) { v -> edit(ref) { it.copy(threshold = v) } } },
                 Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(s.wholeScreen) { v -> edit(ref) { it.copy(wholeScreen = v) } } },
                 Row("Edit Image", icon = Icon.PENCIL) { editImageDialog(ref) },
@@ -1393,12 +1454,18 @@ class EditorOverlay(
         val c = s.conditions.getOrNull(j) ?: return
         fun upd(f: (Condition) -> Condition) = edit(ref) { st -> st.copy(conditions = st.conditions.mapIndexed { k, x -> if (k == j) f(x) else x }) }
         val rows = ArrayList<Row>()
+        rows.add(Row(if (c.enabled) "Turn Off (keep it)" else "Turn On", icon = Icon.CHECK) {
+            closeMenu(); upd { it.copy(enabled = !it.enabled) }; refreshPanel()
+        })
         when (c.kind) {
+            ConditionKind.COLOR -> colorRows(rows, c, ::upd)
+            ConditionKind.TEXT -> textRows(rows, c, ::upd)
             ConditionKind.IMAGE -> {
-                rows.add(Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeConditionImage(ref, j) })
+                rows.add(Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); changeConditionImage(ref, j, false) })
+                rows.add(Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeConditionImage(ref, j, true) })
                 rows.add(Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(c.threshold) { v -> upd { it.copy(threshold = v) } } })
                 rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(c.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } })
-                rows.add(Row(if (c.mustAppear) "Change to Disappear" else "Change to Appear", icon = Icon.REDO) {
+                rows.add(Row(if (c.mustAppear) "Change to Not appear" else "Change to Appears", icon = Icon.REDO) {
                     closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
                 })
                 rows.add(Row("Test Condition", TokenInts.success, Icon.PLAY) {
@@ -1450,8 +1517,13 @@ class EditorOverlay(
         gridRows(
             body,
             listOf(
-                Triple(Icon.PICTURE, "Image Appear") { closeMenu(); addImageCondition(ref, true) },
-                Triple(Icon.PICTURE, "Image Disappear") { closeMenu(); addImageCondition(ref, false) },
+                Triple(Icon.PICTURE, "Image Appears") { closeMenu(); addImageCondition(ref, true) },
+                Triple(Icon.PICTURE, "Image Not Appear") { closeMenu(); addImageCondition(ref, false) },
+                Triple(Icon.PENCIL, "Colour Appears") { closeMenu(); addColorCondition(ref, 0) { c -> edit(ref) { it.copy(conditions = it.conditions + c) }; refreshPanel() } },
+                Triple(Icon.PENCIL, "Colour Not Appear") { closeMenu(); addColorCondition(ref, 1) { c -> edit(ref) { it.copy(conditions = it.conditions + c) }; refreshPanel() } },
+                Triple(Icon.REDO, "Colour Changes") { closeMenu(); addColorCondition(ref, 2) { c -> edit(ref) { it.copy(conditions = it.conditions + c) }; refreshPanel() } },
+                Triple(Icon.PENCIL, "Text Appears") { closeMenu(); addTextCondition(true) { c -> edit(ref) { it.copy(conditions = it.conditions + c) }; refreshPanel() } },
+                Triple(Icon.PENCIL, "Text Not Appear") { closeMenu(); addTextCondition(false) { c -> edit(ref) { it.copy(conditions = it.conditions + c) }; refreshPanel() } },
             ),
         )
         sectionTitle(body, "Macro")
@@ -1475,7 +1547,7 @@ class EditorOverlay(
                 },
             ),
         )
-        box.addView(MaxHeightScrollView(ctx, (screenH * 0.7).toInt()).apply { addView(body) })
+        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.7).toInt(), screenH - dp(230))).apply { addView(body) })
         box.addView(textButton("CANCEL") { closeMenu() }.apply { gravity = Gravity.END }, lp(6))
         val w = (screenW * 0.94).toInt()
         val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, dp(90), outside = true)
@@ -1483,6 +1555,112 @@ class EditorOverlay(
         wm.addView(box, p)
         menu = box
         applyHidden()
+    }
+
+    /** mode 0 = the colour appears, 1 = it does not appear, 2 = the colour in the area changes. */
+    private fun addColorCondition(ref: Ref, mode: Int, onDone: (Condition) -> Unit) {
+        val hint = if (mode == 2) "the area to watch" else "the colour to look for"
+        toast("Move and resize the box over $hint, then tap the tick.")
+        startCapture(null, 1) { box, hex, fw, fh ->
+            val col = runCatching { Color.parseColor(hex) }.getOrDefault(0)
+            onDone(
+                Condition(
+                    kind = ConditionKind.COLOR, color = col, mustAppear = mode != 1, changes = mode == 2,
+                    wholeScreen = mode != 2, tolerance = if (mode == 2) 12 else 20,
+                    label = if (mode == 2) "Colour change" else "Colour ${ScreenCheck.hex(col)}",
+                    boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
+                ),
+            )
+        }
+    }
+
+    private fun addTextCondition(appear: Boolean, onDone: (Condition) -> Unit) {
+        toast("Move and resize the box over the words, then tap the tick.")
+        startCapture(null, 2) { box, _, fw, fh ->
+            var words: EditText? = null
+            showForm("Words to look for", "Type the words as they appear on screen. Capital letters and spaces do not matter.", { b ->
+                words = field(b, "Words", "", text = true)
+            }, {
+                val w = words?.text.toString().trim()
+                if (w.isNotEmpty()) {
+                    onDone(
+                        Condition(
+                            kind = ConditionKind.TEXT, text = w, mustAppear = appear, wholeScreen = false, label = "Text $w",
+                            boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
+                        ),
+                    )
+                }
+            })
+        }
+    }
+
+    /** The menu rows for a colour condition or colour hold-until; [upd] changes it wherever it is kept. */
+    private fun colorRows(rows: MutableList<Row>, c: Condition, upd: ((Condition) -> Condition) -> Unit) {
+        if (!c.changes) rows.add(Row("Pick Colour Again", icon = Icon.PENCIL) {
+            closeMenu()
+            startCapture(if (c.boxW > 0) Rect(c.boxX, c.boxY, c.boxX + c.boxW, c.boxY + c.boxH) else null, 1) { box, hex, fw, fh ->
+                val col = runCatching { Color.parseColor(hex) }.getOrDefault(c.color)
+                upd { it.copy(color = col, label = "Colour ${ScreenCheck.hex(col)}", boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
+                refreshPanel()
+            }
+        }) else rows.add(Row("Move Area", icon = Icon.PENCIL) {
+            closeMenu()
+            startCapture(if (c.boxW > 0) Rect(c.boxX, c.boxY, c.boxX + c.boxW, c.boxY + c.boxH) else null, 1) { box, _, fw, fh ->
+                upd { it.copy(boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
+                refreshPanel()
+            }
+        })
+        rows.add(Row("Edit Colour Match %", icon = Icon.PENCIL) {
+            var f: EditText? = null
+            showForm("Colour match", "How far a colour may be from the saved one and still count. Lower is stricter. 1 to 60.", { b ->
+                f = field(b, "Tolerance (%)", c.tolerance.toString())
+            }, { upd { it.copy(tolerance = (f?.text.toString().toIntOrNull() ?: c.tolerance).coerceIn(1, 60)) } })
+        })
+        if (!c.changes) {
+            rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(c.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } })
+            rows.add(Row(if (c.mustAppear) "Change to Not appear" else "Change to Appears", icon = Icon.REDO) {
+                closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
+            })
+        }
+        rows.add(Row("Test Condition", TokenInts.success, Icon.PLAY) { closeMenu(); testScreen(c) })
+    }
+
+    private fun textRows(rows: MutableList<Row>, c: Condition, upd: ((Condition) -> Condition) -> Unit) {
+        rows.add(Row("Edit Words", icon = Icon.PENCIL) {
+            var words: EditText? = null
+            showForm("Words to look for", "Capital letters and spaces do not matter.", { b -> words = field(b, "Words", c.text, text = true) },
+                { val w = words?.text.toString().trim(); if (w.isNotEmpty()) upd { it.copy(text = w, label = "Text $w") } })
+        })
+        rows.add(Row("Move Area", icon = Icon.PENCIL) {
+            closeMenu()
+            startCapture(if (c.boxW > 0) Rect(c.boxX, c.boxY, c.boxX + c.boxW, c.boxY + c.boxH) else null, 2) { box, _, fw, fh ->
+                upd { it.copy(boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
+                refreshPanel()
+            }
+        })
+        rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(c.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } })
+        rows.add(Row(if (c.mustAppear) "Change to Not appear" else "Change to Appears", icon = Icon.REDO) {
+            closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
+        })
+        rows.add(Row("Test Condition", TokenInts.success, Icon.PLAY) { closeMenu(); testScreen(c) })
+    }
+
+    /** Looks at the screen once and says whether a colour or text condition holds right now. */
+    private fun testScreen(c: Condition) {
+        if (!CaptureService.running) {
+            toast("Screen capture is off. Open MacroLoop, press Edit Mode, and tap Start.")
+            return
+        }
+        val svc = MacroService.instance ?: return
+        scope.launch {
+            setHidden(true)
+            CaptureService.instance?.fast = true
+            delay(450)
+            val msg = svc.testCondition(c)
+            CaptureService.instance?.fast = false
+            setHidden(false)
+            toast(msg)
+        }
     }
 
     private fun addImageCondition(ref: Ref, appear: Boolean) {
@@ -1500,18 +1678,18 @@ class EditorOverlay(
 
     // ================================================================ placing a picture: the capture box
 
-    private fun changeImage(ref: Ref) {
+    private fun changeImage(ref: Ref, keepBox: Boolean = true) {
         val s = stepAt(ref) ?: return
-        val start = if (s.boxW > 0) Rect(s.boxX, s.boxY, s.boxX + s.boxW, s.boxY + s.boxH) else null
+        val start = if (keepBox && s.boxW > 0) Rect(s.boxX, s.boxY, s.boxX + s.boxW, s.boxY + s.boxH) else null
         startCapture(start) { box, id, fw, fh ->
             edit(ref) { it.copy(templateId = id, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
             refreshPanel()
         }
     }
 
-    private fun changeConditionImage(ref: Ref, j: Int) {
+    private fun changeConditionImage(ref: Ref, j: Int, fresh: Boolean = false) {
         val c = stepAt(ref)?.conditions?.getOrNull(j) ?: return
-        val start = if (c.boxW > 0) Rect(c.boxX, c.boxY, c.boxX + c.boxW, c.boxY + c.boxH) else null
+        val start = if (!fresh && c.boxW > 0) Rect(c.boxX, c.boxY, c.boxX + c.boxW, c.boxY + c.boxH) else null
         startCapture(start) { box, id, fw, fh ->
             edit(ref) { st ->
                 st.copy(conditions = st.conditions.mapIndexed { k, x ->
@@ -1544,7 +1722,7 @@ class EditorOverlay(
                 col.addView(label(text, 16f, TokenInts.text).apply { setPadding(0, dp(6), 0, 0) })
                 return col
             }
-            row.addView(big("+", "New") { closeMenu(); startCapture(null, onDone) }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(big("+", "New") { closeMenu(); startCapture(null, 0, onDone) }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(big("▤", "Exist") { openExistPicker(onDone) }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             box.addView(row, lp(14))
         }
@@ -1581,7 +1759,7 @@ class EditorOverlay(
                     repeat(3 - chunk.size) { row.addView(View(ctx), LinearLayout.LayoutParams(0, dp(70), 1f)) }
                     grid.addView(row)
                 }
-                box.addView(MaxHeightScrollView(ctx, (screenH * 0.5).toInt()).apply { addView(grid) }, lp(8))
+                box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.5).toInt(), screenH - dp(270))).apply { addView(grid) }, lp(8))
             }
             box.addView(textButton("CANCEL") { closeMenu() }.apply { gravity = Gravity.END }, lp(6))
         }
@@ -1595,17 +1773,26 @@ class EditorOverlay(
      * Only this box is on screen, the panel moves to the far side from the box (and can be dragged),
      * and Cancel always works. On confirm, the box is hidden, the screen is looked at, and the crop is saved.
      */
-    private fun startCapture(initial: Rect?, onDone: (Rect, String, Int, Int) -> Unit) {
+    private var capMode = 0     // 0 = save a picture, 1 = sample a colour, 2 = just an area
+
+    private fun startCapture(initial: Rect?, mode: Int = 0, onDone: (Rect, String, Int, Int) -> Unit) {
+        capMode = mode
         if (!CaptureService.running) {
-            toast("Screen capture is off. Open MacroLoop, press Edit Mode, and tap Start.")
+            // Ask for screen capture right here; the editor stays where it was.
+            toast("Screen capture is off. Tap Start on the prompt, then try again.")
+            ctx.startActivity(
+                Intent(ctx, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra(MainActivity.EXTRA_ASK_CAPTURE, true),
+            )
             refreshPanelIfOpen()
             return
         }
         closeMenu()
         rm(panel); panel = null; panelScroll = null
         removeCapture()
-        val w0 = (screenW * 0.38).toInt()
-        val h0 = (w0 * 0.55).toInt()
+        val w0 = dp(55)
+        val h0 = dp(40)
         val start = initial ?: Rect((screenW - w0) / 2, (screenH - h0) / 2, (screenW + w0) / 2, (screenH + h0) / 2)
         val lpBox = params(start.width(), start.height(), start.left, start.top).apply {
             flags = flags or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -1696,7 +1883,11 @@ class EditorOverlay(
             val w = region.width().coerceIn(2, frame.width - x)
             val h = region.height().coerceIn(2, frame.height - y)
             val crop = Bitmap.createBitmap(frame, x, y, w, h)
-            val id = TemplateStore.save(crop)
+            val id = when (capMode) {
+                0 -> TemplateStore.save(crop)
+                1 -> ScreenCheck.hex(ScreenCheck.meanColor(crop, Rect(0, 0, w, h)))
+                else -> ""
+            }
             removeCapture()
             onDone(Rect(x, y, x + w, y + h), id, frame.width, frame.height)
             dirty = true

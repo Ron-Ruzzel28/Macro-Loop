@@ -368,8 +368,8 @@ class MainActivity : ComponentActivity() {
         }
 
         if (showNew) NewMacroDialog(
-            onCreate = { name ->
-                val m = MacroRepository.create(name)
+            onCreate = { name, landscape ->
+                val m = MacroRepository.create(name, landscape)
                 showNew = false
                 startMode(m, 1)
             },
@@ -473,6 +473,7 @@ class MainActivity : ComponentActivity() {
                             m.version + "  ·  " + (if (m.steps.isEmpty()) "no steps" else m.summary()),
                             fontSize = 13.sp, color = Tokens.textMuted,
                         )
+                        if (m.landscape) Text("Landscape", fontSize = 13.sp, color = Tokens.textMuted)
                         if (m.runOnly) Text(
                             "Run only" + if (m.sharedBy.isNotBlank()) " · from ${m.sharedBy}" else "",
                             fontSize = 13.sp, color = Tokens.warning,
@@ -739,22 +740,34 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun NewMacroDialog(onCreate: (String) -> Unit, onCancel: () -> Unit) {
+    private fun NewMacroDialog(onCreate: (String, Boolean) -> Unit, onCancel: () -> Unit) {
         var name by remember { mutableStateOf("") }
+        var landscape by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = onCancel,
             containerColor = Tokens.surfaceHigh,
             title = { Text("Name your macro", color = Tokens.text) },
             text = {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    singleLine = true,
-                    placeholder = { Text("For example: Daily claim", color = Tokens.textMuted) },
-                )
+                Column {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        singleLine = true,
+                        placeholder = { Text("For example: Daily claim", color = Tokens.textMuted) },
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Text("How will the phone be held when it runs?", color = Tokens.textMuted, fontSize = 13.sp)
+                    Row(Modifier.padding(top = 6.dp)) {
+                        if (!landscape) PrimaryButton("Portrait", Modifier.weight(1f)) { landscape = false }
+                        else SecondaryButton("Portrait", Modifier.weight(1f)) { landscape = false }
+                        Spacer(Modifier.width(8.dp))
+                        if (landscape) PrimaryButton("Landscape", Modifier.weight(1f)) { landscape = true }
+                        else SecondaryButton("Landscape", Modifier.weight(1f)) { landscape = true }
+                    }
+                }
             },
             confirmButton = {
-                TextButton(onClick = { onCreate(name) }) { Text("Create", color = Tokens.primary, fontSize = 16.sp) }
+                TextButton(onClick = { onCreate(name, landscape) }) { Text("Create", color = Tokens.primary, fontSize = 16.sp) }
             },
             dismissButton = {
                 TextButton(onClick = onCancel) { Text("Cancel", color = Tokens.text, fontSize = 16.sp) }

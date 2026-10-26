@@ -111,6 +111,7 @@ class CaptureService : Service() {
         val t = HandlerThread("capture").also { it.start() }
         thread = t
         val handler = Handler(t.looper)
+        handlerRef = handler
 
         proj.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
@@ -139,6 +140,37 @@ class CaptureService : Service() {
         instance = this
         running = true
         return START_NOT_STICKY
+    }
+
+    private var handlerRef: Handler? = null
+
+    /** When the phone is turned, the captured picture must turn with it, or every position would be wrong. */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val d = display ?: return
+        val handler = handlerRef ?: return
+        val b = (getSystemService(Context.WINDOW_SERVICE) as WindowManager).currentWindowMetrics.bounds
+        if (b.width() == width && b.height() == height) return
+        synchronized(lock) {
+            width = b.width()
+            height = b.height()
+            pending?.close(); pending = null
+            buffer?.recycle(); buffer = null
+        }
+        val old = reader
+        val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        r.setOnImageAvailableListener({ ir ->
+            val image = ir.acquireLatestImage() ?: return@setOnImageAvailableListener
+            synchronized(lock) {
+                pending?.close()
+                pending = image
+            }
+            scheduleConvert(handler)
+        }, handler)
+        reader = r
+        d.resize(width, height, resources.displayMetrics.densityDpi)
+        d.surface = r.surface
+        old?.close()
     }
 
     /** Converts the newest image after the minimum gap, so the last change on screen is never dropped. */

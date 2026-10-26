@@ -77,6 +77,11 @@ class MacroService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        editor?.onRotated()
+    }
+
     override fun onInterrupt() {
         stopRun()
     }
@@ -112,6 +117,7 @@ class MacroService : AccessibilityService() {
         closeEditor()
         val macro = MacroRepository.get(macroId) ?: return
         if (macro.runOnly) return
+        warnOrientation(macro)
         editor = EditorOverlay(this, wm, macro, scope) { closeEditor() }
         editor?.show()
     }
@@ -125,9 +131,18 @@ class MacroService : AccessibilityService() {
      * Opens the floating Play button for a saved macro. The macro does NOT start until Play is pressed,
      * so there is time to open the game or app first.
      */
+    /** Positions only match when the phone is held the way the macro was made. */
+    private fun warnOrientation(macro: Macro) {
+        val b = wm.currentWindowMetrics.bounds
+        if ((b.width() > b.height()) != macro.landscape) {
+            Toast.makeText(this, "This macro was made for " + (if (macro.landscape) "landscape" else "portrait") + ". Turn the phone that way.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     fun showPlayChip(macroId: String) {
         if (!licensed()) return
         val macro = MacroRepository.get(macroId) ?: return
+        warnOrientation(macro)
         closeEditor()
         stopRun()
         val first = playChip == null
@@ -165,7 +180,8 @@ class MacroService : AccessibilityService() {
 
     /** True if the steps look at the screen (a picture step or a picture condition). */
     fun needsCapture(list: List<Step>): Boolean = allSteps(list).any { s ->
-        s.type == StepType.CLICK_IMAGE || s.holdUntil != null || s.conditions.any { it.kind == ConditionKind.IMAGE }
+        s.type == StepType.CLICK_IMAGE || s.holdUntil != null ||
+            s.conditions.any { it.enabled && (it.kind == ConditionKind.IMAGE || it.kind == ConditionKind.COLOR || it.kind == ConditionKind.TEXT) }
     }
 
     /** Checks the whole macro before it starts, so a setup problem is said at once and not after a long wait. */
@@ -179,12 +195,15 @@ class MacroService : AccessibilityService() {
                 return "A picture step has no picture yet. Edit the macro and capture it."
             }
             for (c in s.conditions) {
-                if (s.enabled && c.kind == ConditionKind.IMAGE && TemplateStore.load(c.templateId) == null) {
+                if (s.enabled && c.enabled && c.kind == ConditionKind.IMAGE && TemplateStore.load(c.templateId) == null) {
                     return "A condition has no picture yet. Edit the macro and capture it."
+                }
+                if (s.enabled && c.enabled && c.kind == ConditionKind.TEXT && c.text.isBlank()) {
+                    return "A text condition has no words yet. Edit the macro and type them."
                 }
             }
             val hold = s.holdUntil
-            if (s.enabled && hold != null && TemplateStore.load(hold.templateId) == null) {
+            if (s.enabled && hold != null && hold.kind == ConditionKind.IMAGE && TemplateStore.load(hold.templateId) == null) {
                 return "A hold-until has no picture yet. Edit the macro and capture it."
             }
         }
@@ -260,6 +279,9 @@ class MacroService : AccessibilityService() {
         runMacro(macro, onFinished, startList = list.drop(index), rounds = 1)
     }
 
+    /** Looks once at one condition and says the answer, for the editor's Test buttons. */
+    suspend fun testCondition(c: Condition): String = RunHost("test").describe(c)
+
     fun stopRun() {
         runJob?.cancel()
         runJob = null
@@ -299,7 +321,12 @@ class MacroService : AccessibilityService() {
             else -> Outcome.Ok
         }
 
+        private val baselines = HashMap<Condition, Int>()
+
+        override fun resetBaselines() = baselines.clear()
+
         override suspend fun imageHolds(c: Condition): ImageCheck {
+            if (c.kind == ConditionKind.COLOR || c.kind == ConditionKind.TEXT) return screenHolds(c)
             val t = template(c.templateId) ?: return ImageCheck(false, "\"${c.label}\" has no picture")
             val frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 120, 250)
                 ?: return ImageCheck(false, "\"${c.label}\" could not be checked, the screen is not visible")
@@ -312,6 +339,33 @@ class MacroService : AccessibilityService() {
             val note = if (c.mustAppear) "\"${c.label}\" was not on screen (best ${(r.score * 100).toInt()}%)"
             else "\"${c.label}\" was still on screen"
             return ImageCheck(holds, note)
+        }
+
+        /** Colour and text conditions (also used by Hold Until). */
+        private suspend fun screenHolds(c: Condition): ImageCheck {
+            val name = c.label.ifBlank { if (c.kind == ConditionKind.COLOR) "the colour" else "\"${c.text}\"" }
+            val frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 120, 250)
+                ?: return ImageCheck(false, "$name could not be checked, the screen is not visible")
+            val r = ScreenCheck.regionFor(c, frame)
+            if (c.kind == ConditionKind.COLOR) {
+                val now = withContext(Dispatchers.Default) { ScreenCheck.meanColor(frame, r) }
+                if (c.changes) {
+                    val base = baselines.getOrPut(c) { now }
+                    val changed = ScreenCheck.colorChanged(base, now, c.tolerance)
+                    return ImageCheck(changed, "$name has not changed yet")
+                }
+                val present = withContext(Dispatchers.Default) { ScreenCheck.colorPresent(frame, r, c.color, c.tolerance, c.wholeScreen || c.boxW <= 0) }
+                return ImageCheck(present == c.mustAppear, if (c.mustAppear) "$name (${ScreenCheck.hex(c.color)}) was not on screen" else "$name (${ScreenCheck.hex(c.color)}) was still on screen")
+            }
+            val read = withContext(Dispatchers.Default) { ScreenCheck.readText(frame, r) }
+            val found = ScreenCheck.textMatches(read, c.text)
+            return ImageCheck(found == c.mustAppear, if (c.mustAppear) "the words $name were not on screen" else "the words $name were still on screen")
+        }
+
+        /** The text for a toast when you press Test on a condition in the editor. */
+        suspend fun describe(c: Condition): String {
+            val r = imageHolds(c)
+            return if (r.holds) "Condition is true" else "Condition is false: ${r.note}"
         }
 
         override suspend fun pause(ms: Long) = delay(ms)
@@ -347,6 +401,7 @@ class MacroService : AccessibilityService() {
          */
         private suspend fun holdUntilTap(step: Step, x: Int, y: Int, where: String): Outcome {
             val until = step.holdUntil ?: return Outcome.Ok
+            baselines.remove(until)
             val spread = maxOf(step.randomizePx, if (human) 3 else 0)
             val paths = fingerXs(x, step.twoFingers).map { px ->
                 Path().apply { moveTo((px + jitter(spread)).coerceAtLeast(0).toFloat(), (y + jitter(spread)).coerceAtLeast(0).toFloat()) }
@@ -372,7 +427,7 @@ class MacroService : AccessibilityService() {
                     dispatchAll(last)
                     return if (holds) Outcome.Ok else Outcome.Missing(
                         "Stopped: held for ${step.holdMaxMs / 1000} s in step $where, but \"${until.label.ifBlank { "the picture" }}\" " +
-                            "never ${if (until.mustAppear) "appeared" else "disappeared"}.",
+                            "never ${if (until.changes) "changed" else if (until.mustAppear) "appeared" else "disappeared"}.",
                     )
                 }
             }
