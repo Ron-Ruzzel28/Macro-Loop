@@ -27,6 +27,18 @@ object TemplateStore {
         return if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
     }
 
+    fun loadBytes(id: String): ByteArray? {
+        if (id.isEmpty()) return null
+        val f = File(dir, "$id.png")
+        return if (f.exists()) f.readBytes() else null
+    }
+
+    /** Stores a picture that came from a shared file, keeping its id. The id must look like a UUID. */
+    fun saveBytes(id: String, bytes: ByteArray) {
+        if (!Regex("[0-9a-fA-F-]{8,40}").matches(id)) return
+        File(dir, "$id.png").writeBytes(bytes)
+    }
+
     /** Deletes picture files that no macro uses any more. */
     fun prune(used: Set<String>) {
         dir.listFiles()?.forEach { f ->

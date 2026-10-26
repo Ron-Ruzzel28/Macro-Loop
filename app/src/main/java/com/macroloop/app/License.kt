@@ -23,7 +23,8 @@ import java.time.OffsetDateTime
  *  - the answer is trial, active (approved by the owner), locked or revoked;
  *  - the last good answer is kept, and the app works offline for up to 24 hours after it;
  *  - if the phone's clock is moved back, the app asks for a fresh check before it runs anything.
- * The key below is the project's public key: it can only call check_in. It cannot read the table or approve a phone.
+ * The key below is the project's public key: it can only call check_in, create_share and get_share_key.
+ * It cannot read the tables or approve a phone.
  */
 object License {
     private const val SERVER = "https://yiveaqhrzcoyrlazvoht.supabase.co"
@@ -47,6 +48,8 @@ object License {
         private set
     var offline by mutableStateOf(false)
         private set
+    var checkedAt by mutableStateOf(0L)        // when the last good answer came, on this phone's clock
+        private set
 
     val usable: Boolean get() = state == State.TRIAL || state == State.ACTIVE
 
@@ -59,6 +62,8 @@ object License {
         val hex = hash.joinToString("") { "%02X".format(it) }.take(12)
         return hex.chunked(4).joinToString("-")
     }
+
+    private fun rawCode(ctx: Context) = deviceCode(ctx).replace("-", "")
 
     fun name(ctx: Context): String = prefs(ctx).getString("name", "") ?: ""
 
@@ -76,10 +81,26 @@ object License {
     /** True if macros may run right now. Also refreshes [state] for the screen. */
     fun allowed(ctx: Context): Boolean = evaluate(ctx)
 
+    /** True only for a phone the owner has switched on (not one in its free trial). Needed to share macros. */
+    fun switchedOn(ctx: Context): Boolean = evaluate(ctx) && state == State.ACTIVE
+
     /** Milliseconds since the last good answer from the server, or a very large number if there is none. */
     fun ageMs(ctx: Context): Long {
         val received = prefs(ctx).getLong("received", 0L)
         return if (received == 0L) Long.MAX_VALUE else System.currentTimeMillis() - received
+    }
+
+    /** "2 min ago", "3 h ago" or "never". */
+    fun lastCheckedText(ctx: Context): String {
+        val age = ageMs(ctx)
+        if (age == Long.MAX_VALUE) return "never"
+        val mins = age / 60_000
+        return when {
+            mins < 1 -> "just now"
+            mins < 60 -> "$mins min ago"
+            mins < 60 * 48 -> "${mins / 60} h ago"
+            else -> "${mins / (60 * 24)} days ago"
+        }
     }
 
     /** A plain "1 day 5 h" for the time left. */
@@ -90,11 +111,16 @@ object License {
         val h = (mins / 60) % 24
         val m = mins % 60
         return when {
+            d >= 400 -> "${d / 365} years"
             d > 0 -> "$d day${if (d == 1L) "" else "s"} $h h"
             h > 0 -> "$h h $m min"
             else -> "$m min"
         }
     }
+
+    /** The end date, like "25 Dec 2026", on this phone's time zone. */
+    fun untilDateText(): String =
+        if (untilMs == 0L) "" else java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.ENGLISH).format(java.util.Date(untilMs))
 
     private fun serverNow(ctx: Context): Long {
         val p = prefs(ctx)
@@ -120,6 +146,7 @@ object License {
         val until = p.getLong("until", 0L)
         val received = p.getLong("received", 0L)
         untilMs = until
+        checkedAt = received
         val age = now - received
         return when (status) {
             "trial", "active" -> {
@@ -158,28 +185,36 @@ object License {
     private fun parseTime(s: String?): Long =
         if (s.isNullOrBlank() || s == "null") 0L else runCatching { OffsetDateTime.parse(s).toInstant().toEpochMilli() }.getOrDefault(0L)
 
+    /** Calls one server function and returns its answer. Blocking: use it off the main thread. */
+    private fun post(function: String, body: JSONObject): JSONObject {
+        val conn = (URL("$SERVER/rest/v1/rpc/$function").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 8000
+            readTimeout = 8000
+            doOutput = true
+            setRequestProperty("apikey", PUBLIC_KEY)
+            setRequestProperty("Authorization", "Bearer $PUBLIC_KEY")
+            setRequestProperty("Content-Type", "application/json")
+        }
+        try {
+            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            val ok = conn.responseCode in 200..299
+            val text = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText().orEmpty()
+            return runCatching { JSONObject(text) }.getOrElse { JSONObject().put("error", "bad_reply") }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     /** Asks the server about this phone. Safe to call from any thread. Never throws. */
     suspend fun checkIn(ctx: Context) {
         val app = ctx.applicationContext
         checking = true
         try {
             withContext(Dispatchers.IO) {
-                val body = JSONObject().put("p_device", deviceCode(app).replace("-", "")).put("p_name", name(app)).toString()
-                val conn = (URL("$SERVER/rest/v1/rpc/check_in").openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 8000
-                    readTimeout = 8000
-                    doOutput = true
-                    setRequestProperty("apikey", PUBLIC_KEY)
-                    setRequestProperty("Authorization", "Bearer $PUBLIC_KEY")
-                    setRequestProperty("Content-Type", "application/json")
-                }
-                conn.outputStream.use { it.write(body.toByteArray()) }
-                val ok = conn.responseCode in 200..299
-                val text = (if (ok) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText().orEmpty()
-                val j = JSONObject(text)
+                val j = post("check_in", JSONObject().put("p_device", rawCode(app)).put("p_name", name(app)))
                 val status = j.optString("status", "error")
-                if (!ok || status == "error") {
+                if (status == "error" || j.has("error") || j.has("code")) {
                     message = j.optString("message", "The server did not accept this phone.")
                     offline = false
                 } else {
@@ -198,5 +233,54 @@ object License {
             checking = false
             evaluate(app)
         }
+    }
+
+    // ------------------------------------------------------------------ sharing macros
+
+    /** The answer to making or opening a share. [error] is empty when it worked. */
+    class ShareAnswer(
+        val error: String = "",
+        val shareId: String = "",
+        val key: String = "",
+        val runOnly: Boolean = false,
+        val macroName: String = "",
+        val fromName: String = "",
+    ) {
+        val ok: Boolean get() = error.isEmpty()
+    }
+
+    private fun shareError(j: JSONObject): String = when (j.optString("error", "")) {
+        "" -> if (j.has("code")) "The server refused the request." else ""
+        "not_active" -> "Only phones the owner has switched on can share or open macros."
+        "revoked" -> "The owner has switched this file off."
+        "unknown" -> "The server does not know this file."
+        else -> "The server could not do that."
+    }
+
+    /** Export: asks the server for a new share (an id and a key). Only a switched-on phone gets one. */
+    suspend fun createShare(ctx: Context, macroName: String, runOnly: Boolean): ShareAnswer = try {
+        withContext(Dispatchers.IO) {
+            val j = post("create_share", JSONObject().put("p_device", rawCode(ctx)).put("p_macro_name", macroName).put("p_run_only", runOnly))
+            val err = shareError(j)
+            if (err.isNotEmpty()) ShareAnswer(error = err)
+            else ShareAnswer(shareId = j.getString("share_id"), key = j.getString("key"), runOnly = j.optBoolean("run_only"))
+        }
+    } catch (e: Exception) {
+        ShareAnswer(error = "No internet. Sharing needs a connection to get the key.")
+    }
+
+    /** Import: asks the server for the key of a file. Only a switched-on phone gets it, and only while the file is on. */
+    suspend fun getShareKey(ctx: Context, shareId: String): ShareAnswer = try {
+        withContext(Dispatchers.IO) {
+            val j = post("get_share_key", JSONObject().put("p_device", rawCode(ctx)).put("p_share", shareId))
+            val err = shareError(j)
+            if (err.isNotEmpty()) ShareAnswer(error = err)
+            else ShareAnswer(
+                shareId = shareId, key = j.getString("key"), runOnly = j.optBoolean("run_only"),
+                macroName = j.optString("macro_name", ""), fromName = j.optString("made_by_name", ""),
+            )
+        }
+    } catch (e: Exception) {
+        ShareAnswer(error = "No internet. Opening a shared macro needs a connection to get the key.")
     }
 }

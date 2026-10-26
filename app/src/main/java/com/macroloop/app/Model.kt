@@ -224,6 +224,8 @@ data class Macro(
     val updatedAt: Long = System.currentTimeMillis(),
     val game: String = "",
     val version: String = "1.0.0",
+    val runOnly: Boolean = false,
+    val sharedBy: String = "",
 ) {
     fun summary(): String {
         val s = if (steps.size == 1) "1 step" else "${steps.size} steps"
@@ -238,6 +240,8 @@ data class Macro(
         .put("updatedAt", updatedAt)
         .put("game", game)
         .put("version", version)
+        .put("runOnly", runOnly)
+        .put("sharedBy", sharedBy)
         .put("steps", JSONArray().also { a -> steps.forEach { a.put(it.toJson()) } })
 
     companion object {
@@ -250,6 +254,8 @@ data class Macro(
                 updatedAt = o.optLong("updatedAt"),
                 game = o.optString("game", ""),
                 version = o.optString("version", "1.0.0"),
+                runOnly = o.optBoolean("runOnly", false),
+                sharedBy = o.optString("sharedBy", ""),
                 steps = List(arr.length()) { Step.fromJson(arr.getJSONObject(it)) },
             )
         }

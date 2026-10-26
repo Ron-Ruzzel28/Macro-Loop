@@ -111,6 +111,7 @@ class MacroService : AccessibilityService() {
         closePlayChip()
         closeEditor()
         val macro = MacroRepository.get(macroId) ?: return
+        if (macro.runOnly) return
         editor = EditorOverlay(this, wm, macro, scope) { closeEditor() }
         editor?.show()
     }

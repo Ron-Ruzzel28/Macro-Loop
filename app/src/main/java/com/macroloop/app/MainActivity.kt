@@ -79,7 +79,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private enum class Screen { HOME, SETUP, DEBUG, INFO }
+private enum class Screen { HOME, SETUP, DEBUG, INFO, ACCOUNT }
 
 class MainActivity : ComponentActivity() {
 
@@ -113,6 +113,61 @@ class MainActivity : ComponentActivity() {
         returnAfterCapture = false
     }
 
+    private val importPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importFrom(uri)
+    }
+
+    /** Reads a .mlm file, asks the server for its key (switched-on phones only) and adds the macro. */
+    private fun importFrom(uri: Uri) {
+        val app = applicationContext
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    app.contentResolver.openInputStream(uri)?.use { s ->
+                        val out = java.io.ByteArrayOutputStream()
+                        val buf = ByteArray(8192)
+                        var total = 0L
+                        while (true) {
+                            val n = s.read(buf)
+                            if (n < 0) break
+                            total += n
+                            if (total > 40L * 1024 * 1024) return@runCatching null
+                            out.write(buf, 0, n)
+                        }
+                        out.toByteArray()
+                    }
+                }.getOrNull()
+            }
+            if (bytes == null) {
+                Toast.makeText(app, "Could not read that file.", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            Toast.makeText(app, "Opening the macro...", Toast.LENGTH_SHORT).show()
+            val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { MacroShare.import(app, bytes) }
+            Toast.makeText(app, r.message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun exportMacro(m: Macro, runOnly: Boolean) {
+        val app = applicationContext
+        Toast.makeText(app, "Preparing the file...", Toast.LENGTH_SHORT).show()
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { MacroShare.export(app, m, runOnly) }
+            val f = r.file
+            if (!r.ok || f == null) {
+                Toast.makeText(app, r.message, Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val uri = androidx.core.content.FileProvider.getUriForFile(app, "${app.packageName}.files", f)
+            val send = Intent(Intent.ACTION_SEND)
+                .setType("application/octet-stream")
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .putExtra(Intent.EXTRA_SUBJECT, "MacroLoop macro: ${m.name}")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(send, "Send macro").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        }
+    }
+
     private fun askForCapture() {
         val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         // Android 14 and later: offer only "entire screen", with no single-app choice.
@@ -130,6 +185,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(i: Intent?) {
+        if (i?.action == Intent.ACTION_VIEW && i.data != null) {
+            val u = i.data!!
+            i.data = null
+            importFrom(u)
+        }
         if (i?.getBooleanExtra(EXTRA_SELF_TEST, false) == true) {
             i.removeExtra(EXTRA_SELF_TEST)
             runSelfTest()
@@ -182,8 +242,13 @@ class MainActivity : ComponentActivity() {
                 onSetup = { screen = Screen.SETUP },
                 onDebug = { screen = Screen.DEBUG },
                 onInfo = { infoId = it; screen = Screen.INFO },
+                onAccount = { screen = Screen.ACCOUNT },
             )
             Screen.INFO -> InfoScreen(infoId) { screen = Screen.HOME }
+            Screen.ACCOUNT -> {
+                BackHandler { screen = Screen.HOME }
+                AccountScreen(onBack = { screen = Screen.HOME })
+            }
             Screen.DEBUG -> {
                 BackHandler { screen = Screen.HOME }
                 DebugScreen(onBack = { screen = Screen.HOME })
@@ -212,7 +277,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun HomeScreen(onSetup: () -> Unit, onDebug: () -> Unit, onInfo: (String) -> Unit) {
+    private fun HomeScreen(onSetup: () -> Unit, onDebug: () -> Unit, onInfo: (String) -> Unit, onAccount: () -> Unit) {
         var showNew by remember { mutableStateOf(false) }
         var menuOpen by remember { mutableStateOf(false) }
         val homeCtx = LocalContext.current
@@ -224,12 +289,14 @@ class MainActivity : ComponentActivity() {
                 Box {
                     Text("⋮", fontSize = 24.sp, color = Tokens.onPrimary, modifier = Modifier.clickable { menuOpen = true }.padding(12.dp))
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text("My access") }, onClick = { menuOpen = false; onAccount() })
+                        DropdownMenuItem(text = { Text("Import a macro file") }, onClick = { menuOpen = false; importPicker.launch(arrayOf("*/*")) })
                         DropdownMenuItem(text = { Text("Set up and permissions") }, onClick = { menuOpen = false; onSetup() })
                         DropdownMenuItem(text = { Text("Picture test (advanced)") }, onClick = { menuOpen = false; onDebug() })
                     }
                 }
             }
-            LicenseBanner()
+            LicenseBanner(onAccount)
             if (!accessibilityOn) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Tokens.surface),
@@ -312,28 +379,20 @@ class MainActivity : ComponentActivity() {
 
     /** Trial time left, or the lock card with this phone's code for the owner. */
     @Composable
-    private fun LicenseBanner() {
+    private fun LicenseBanner(onAccount: () -> Unit) {
         val ctx = LocalContext.current
         val st = License.state
         if (License.usable) {
-            if (st == License.State.TRIAL) {
-                Text(
-                    "Trial: ${License.leftText(ctx)} left",
-                    fontSize = 13.sp, color = Tokens.warning,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                )
-            }
-            // An approved phone sees when its access ends, once that is within about two months.
+            // Always visible: the plan, the time left and this phone's code. Tap for the full page.
             val leftMs = License.untilMs - System.currentTimeMillis()
-            if (st == License.State.ACTIVE && License.untilMs != 0L && leftMs < 60L * 24 * 60 * 60 * 1000) {
-                val date = java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.ENGLISH).format(java.util.Date(License.untilMs))
-                Text(
-                    "Access until $date  (${License.leftText(ctx)} left)",
-                    fontSize = 13.sp,
-                    color = if (leftMs < 5L * 24 * 60 * 60 * 1000) Tokens.warning else Tokens.textMuted,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                )
-            }
+            val soon = License.untilMs != 0L && leftMs < 5L * 24 * 60 * 60 * 1000
+            val label = if (st == License.State.TRIAL) "Trial" else "Access"
+            Text(
+                "$label: ${License.leftText(ctx)} left  ·  ${License.deviceCode(ctx)}",
+                fontSize = 13.sp,
+                color = if (st == License.State.TRIAL || soon) Tokens.warning else Tokens.textMuted,
+                modifier = Modifier.fillMaxWidth().clickable { onAccount() }.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
             return
         }
         val code = remember { License.deviceCode(ctx) }
@@ -414,13 +473,19 @@ class MainActivity : ComponentActivity() {
                             m.version + "  ·  " + (if (m.steps.isEmpty()) "no steps" else m.summary()),
                             fontSize = 13.sp, color = Tokens.textMuted,
                         )
+                        if (m.runOnly) Text(
+                            "Run only" + if (m.sharedBy.isNotBlank()) " · from ${m.sharedBy}" else "",
+                            fontSize = 13.sp, color = Tokens.warning,
+                        )
                     }
                 }
                 Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { startMode(m, 1) }, modifier = Modifier.heightIn(min = 44.dp)) {
-                        Text("EDIT MODE", color = Tokens.primary, fontSize = 15.sp, letterSpacing = 1.sp)
+                    if (!m.runOnly) {
+                        TextButton(onClick = { startMode(m, 1) }, modifier = Modifier.heightIn(min = 44.dp)) {
+                            Text("EDIT MODE", color = Tokens.primary, fontSize = 15.sp, letterSpacing = 1.sp)
+                        }
+                        Spacer(Modifier.width(18.dp))
                     }
-                    Spacer(Modifier.width(18.dp))
                     TextButton(onClick = { startMode(m, 2) }, modifier = Modifier.heightIn(min = 44.dp)) {
                         Text("PLAY MODE", color = Tokens.primary, fontSize = 15.sp, letterSpacing = 1.sp)
                     }
@@ -442,6 +507,8 @@ class MainActivity : ComponentActivity() {
         var version by remember(id) { mutableStateOf(m.version) }
         var repeat by remember(id) { mutableStateOf(m.repeat.toString()) }
         var confirmDelete by remember { mutableStateOf(false) }
+        var askExport by remember { mutableStateOf(false) }
+        val infoCtx = LocalContext.current
         fun save() {
             MacroRepository.get(id)?.let {
                 MacroRepository.save(
@@ -473,11 +540,48 @@ class MainActivity : ComponentActivity() {
                 )
                 Spacer(Modifier.height(16.dp))
                 Text(m.summary(), fontSize = 14.sp, color = Tokens.textMuted)
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(20.dp))
+                if (m.runOnly) {
+                    Text(
+                        "Run only: shared with you" + (if (m.sharedBy.isNotBlank()) " by ${m.sharedBy}" else "") +
+                            ". You can play it but not edit or share it.",
+                        fontSize = 14.sp, color = Tokens.warning,
+                    )
+                } else {
+                    PrimaryButton("Export this macro", Modifier.fillMaxWidth()) {
+                        if (License.switchedOn(infoCtx)) askExport = true
+                        else Toast.makeText(infoCtx, "Only a phone the owner has switched on can share macros.", Toast.LENGTH_LONG).show()
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
                 TextButton(onClick = { confirmDelete = true }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Delete this macro", color = Tokens.danger, fontSize = 16.sp)
                 }
             }
+        }
+        if (askExport) {
+            AlertDialog(
+                onDismissRequest = { askExport = false },
+                containerColor = Tokens.surfaceHigh,
+                title = { Text("Export \"${m.name}\"", color = Tokens.text) },
+                text = {
+                    Text(
+                        "Run only: they can play it but not see or change the steps.\nFull copy: they can play, edit and export it.\n\nOnly phones the owner has switched on can open the file.",
+                        color = Tokens.textMuted, fontSize = 14.sp,
+                    )
+                },
+                confirmButton = {
+                    Column(horizontalAlignment = Alignment.End) {
+                        TextButton(onClick = { save(); askExport = false; exportMacro(MacroRepository.get(id) ?: m, true) }) {
+                            Text("Run only", color = Tokens.primary, fontSize = 16.sp)
+                        }
+                        TextButton(onClick = { save(); askExport = false; exportMacro(MacroRepository.get(id) ?: m, false) }) {
+                            Text("Full copy", color = Tokens.primary, fontSize = 16.sp)
+                        }
+                    }
+                },
+                dismissButton = { TextButton(onClick = { askExport = false }) { Text("Cancel", color = Tokens.text, fontSize = 16.sp) } },
+            )
         }
         if (confirmDelete) {
             AlertDialog(
@@ -492,6 +596,62 @@ class MainActivity : ComponentActivity() {
                 },
                 dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Keep it", color = Tokens.text, fontSize = 16.sp) } },
             )
+        }
+    }
+
+    /** "My access": this phone's code, the plan and time left, and a button to check with the server now. */
+    @Composable
+    private fun AccountScreen(onBack: () -> Unit) {
+        val ctx = LocalContext.current
+        val code = remember { License.deviceCode(ctx) }
+        var name by remember { mutableStateOf(License.name(ctx)) }
+        val st = License.state
+        val title = when (st) {
+            License.State.TRIAL -> "Free trial"
+            License.State.ACTIVE -> "Switched on by the owner"
+            License.State.REVOKED -> "Switched off by the owner"
+            License.State.LOCKED -> "Access has ended"
+            License.State.UNKNOWN -> "Not checked yet"
+        }
+        Column(Modifier.fillMaxSize()) {
+            TopBar("My access", "←", onBack)
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                Text(title, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = if (License.usable) Tokens.text else Tokens.danger)
+                if (License.usable && License.untilMs != 0L) {
+                    Text("${License.leftText(ctx)} left", fontSize = 18.sp, color = Tokens.primary, modifier = Modifier.padding(top = 4.dp))
+                    Text("Ends ${License.untilDateText()}", fontSize = 14.sp, color = Tokens.textMuted)
+                }
+                if (License.message.isNotBlank()) Text(License.message, fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 4.dp))
+                Spacer(Modifier.height(20.dp))
+                Text("This phone's code", fontSize = 13.sp, color = Tokens.textMuted)
+                Text(code, fontSize = 28.sp, color = Tokens.text, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 4.dp))
+                Text("Send this code to the owner to switch the phone on or renew it.", fontSize = 13.sp, color = Tokens.textMuted)
+                Spacer(Modifier.height(10.dp))
+                Row {
+                    PrimaryButton("Copy code", Modifier.weight(1f)) {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("MacroLoop code", code))
+                        Toast.makeText(ctx, "Code copied", Toast.LENGTH_SHORT).show()
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    SecondaryButton(if (License.checking) "Checking..." else "Check now", Modifier.weight(1f)) {
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { License.checkIn(ctx.applicationContext) }
+                    }
+                }
+                Spacer(Modifier.height(20.dp))
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it.take(40); License.setName(ctx, name) },
+                    singleLine = true, label = { Text("Name shown to the owner") }, modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(16.dp))
+                Text("Last checked: ${License.lastCheckedText(ctx)}", fontSize = 13.sp, color = Tokens.textMuted)
+                if (License.offline) Text("No internet right now. MacroLoop keeps working for up to 24 hours after the last check.", fontSize = 13.sp, color = Tokens.warning, modifier = Modifier.padding(top = 2.dp))
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Sharing macros: only a phone the owner has switched on can export or open a shared macro. Trial phones can play their own macros but cannot share.",
+                    fontSize = 13.sp, color = Tokens.textMuted,
+                )
+            }
         }
     }
 
@@ -717,6 +877,10 @@ class MainActivity : ComponentActivity() {
         }
         if (!License.allowed(this)) {
             Toast.makeText(this, License.message.ifBlank { "MacroLoop is locked." }, Toast.LENGTH_LONG).show()
+            return
+        }
+        if (mode == 1 && m.runOnly) {
+            Toast.makeText(this, "This macro is run only. You can play it but not edit it.", Toast.LENGTH_LONG).show()
             return
         }
         if (mode == 2 && m.steps.isEmpty()) {
