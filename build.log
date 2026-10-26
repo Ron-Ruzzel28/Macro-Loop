@@ -1,4 +1,3 @@
-Starting a Gradle Daemon (subsequent builds will be faster)
 > Task :app:preBuild UP-TO-DATE
 > Task :app:preDebugBuild UP-TO-DATE
 > Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
@@ -43,5 +42,5 @@ Starting a Gradle Daemon (subsequent builds will be faster)
 > Task :app:createDebugApkListingFileRedirect UP-TO-DATE
 > Task :app:assembleDebug
 
-BUILD SUCCESSFUL in 43s
+BUILD SUCCESSFUL in 8s
 35 actionable tasks: 4 executed, 31 up-to-date

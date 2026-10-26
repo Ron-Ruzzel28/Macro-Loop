@@ -584,7 +584,7 @@ class MainActivity : ComponentActivity() {
             askForCapture()
             return
         }
-        svc.startRun(m.id)
+        svc.showPlayPanel(m.id)
         moveTaskToBack(true)
     }
 
@@ -601,7 +601,7 @@ class MainActivity : ComponentActivity() {
             if (svc == null) {
                 Toast.makeText(this, "Turn on MacroLoop in accessibility settings first.", Toast.LENGTH_LONG).show()
             } else {
-                svc.startRun(id)
+                svc.showPlayPanel(id)
                 moveTaskToBack(true)
             }
         }, 700)

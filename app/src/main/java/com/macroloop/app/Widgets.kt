@@ -15,7 +15,7 @@ import kotlin.math.abs
 import kotlin.math.max
 
 /** Icons for the editor toolbar. Drawn here, so there are no image files. */
-enum class Icon { TAP, SWIPE, PICTURE, PLAY, EYE, EYE_OFF, LIST, SAVE, CLOSE, BACK }
+enum class Icon { TAP, SWIPE, PICTURE, PLAY, EYE, EYE_OFF, LIST, SAVE, CLOSE, BACK, PLUS }
 
 class IconView(context: Context, var icon: Icon, private val color: Int) : View(context) {
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -81,6 +81,10 @@ class IconView(context: Context, var icon: Icon, private val color: Int) : View(
                 val p = Path().apply { moveTo(46f, 28f); lineTo(24f, 50f); lineTo(46f, 72f) }
                 c.drawPath(p, stroke)
             }
+            Icon.PLUS -> {
+                c.drawLine(50f, 22f, 50f, 78f, stroke)
+                c.drawLine(22f, 50f, 78f, 50f, stroke)
+            }
             Icon.CLOSE -> {
                 c.drawLine(26f, 26f, 74f, 74f, stroke)
                 c.drawLine(74f, 26f, 26f, 74f, stroke)
@@ -108,9 +112,9 @@ class ToolButton(
         background = Ui.rounded(TokenInts.surfaceHigh, Ui.dp(context, 12).toFloat())
         isClickable = true
         contentDescription = label
-        addView(iconView, LayoutParams(Ui.dp(context, 30), Ui.dp(context, 30)))
+        addView(iconView, LayoutParams(Ui.dp(context, 34), Ui.dp(context, 34)))
         text.text = label
-        text.textSize = 11f
+        text.textSize = 13f
         text.setTextColor(TokenInts.text)
         text.gravity = Gravity.CENTER
         addView(text, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))

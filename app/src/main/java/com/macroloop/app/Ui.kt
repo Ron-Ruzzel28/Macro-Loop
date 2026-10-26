@@ -24,10 +24,10 @@ object Ui {
         onClick: () -> Unit,
     ): TextView = TextView(ctx).apply {
         text = label
-        textSize = 16f
+        textSize = 18f
         setTextColor(textColor)
         gravity = Gravity.CENTER
-        minHeight = dp(ctx, 48)
+        minHeight = dp(ctx, 56)
         setPadding(dp(ctx, 16), dp(ctx, 8), dp(ctx, 16), dp(ctx, 8))
         background = rounded(fill, dp(ctx, 12).toFloat())
         isClickable = true

@@ -79,6 +79,7 @@ data class Step(
     // branches: steps that run after this one
     val onSuccess: List<Step> = emptyList(), // when the step worked
     val onFail: List<Step> = emptyList(),    // when its picture or conditions never showed up
+    val enabled: Boolean = true,             // false = the step is skipped
 ) {
     /** One readable line, in plain words. */
     fun describe(): String = when (type) {
@@ -109,6 +110,7 @@ data class Step(
         .put("waitNextMs", waitNextMs)
         .put("randomizePx", randomizePx)
         .put("anyOf", anyOf)
+        .put("enabled", enabled)
         .put("onSuccess", JSONArray().also { a -> onSuccess.forEach { a.put(it.toJson()) } })
         .put("onFail", JSONArray().also { a -> onFail.forEach { a.put(it.toJson()) } })
         .put("conditions", JSONArray().also { a -> conditions.forEach { a.put(it.toJson()) } })
@@ -139,6 +141,7 @@ data class Step(
             waitNextMs = o.optLong("waitNextMs", 100),
             randomizePx = o.optInt("randomizePx", 0),
             anyOf = o.optBoolean("anyOf", false),
+            enabled = o.optBoolean("enabled", true),
             onSuccess = o.optJSONArray("onSuccess")?.let { a -> List(a.length()) { fromJson(a.getJSONObject(it)) } } ?: emptyList(),
             onFail = o.optJSONArray("onFail")?.let { a -> List(a.length()) { fromJson(a.getJSONObject(it)) } } ?: emptyList(),
             conditions = o.optJSONArray("conditions")?.let { a ->

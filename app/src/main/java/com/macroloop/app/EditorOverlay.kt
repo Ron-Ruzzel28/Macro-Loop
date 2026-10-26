@@ -71,13 +71,14 @@ class EditorOverlay(
     fun show() {
         addLines()
         addToolbar()
-        rebuildMarkers()
-        toast("Editing \"$macroName\"")
+        enterListMode()
     }
 
     fun dismiss() {
         closeSheet()
         closeDialog()
+        panel?.let { runCatching { wm.removeView(it) } }
+        panel = null
         removeMatchBox()
         clearMarkers()
         linesView?.let { runCatching { wm.removeView(it) } }
@@ -125,7 +126,7 @@ class EditorOverlay(
         back.visibility = View.GONE
         backButton = back
         row2.addView(back, weight())
-        row2.addView(ToolButton(ctx, Icon.LIST, "List") { openStepsList() }, weight())
+        row2.addView(ToolButton(ctx, Icon.LIST, "List") { enterListMode() }, weight())
         row2.addView(ToolButton(ctx, Icon.SAVE, "Save") { save(); toast("Saved") }, weight())
         row2.addView(ToolButton(ctx, Icon.CLOSE, "Close", TokenInts.danger) { requestClose() }, weight())
         root.addView(row2)
@@ -171,7 +172,7 @@ class EditorOverlay(
 
     private fun flat(list: List<Step>): List<Step> = list.flatMap { listOf(it) + flat(it.onSuccess) + flat(it.onFail) }
 
-    private fun enterBranch(i: Int, onSuccess: Boolean) {
+    private fun enterBranch(i: Int, onSuccess: Boolean, silent: Boolean = false) {
         if (i !in steps.indices) return
         closeSheet()
         val s = steps[i]
@@ -179,6 +180,7 @@ class EditorOverlay(
         steps = (if (onSuccess) s.onSuccess else s.onFail).toMutableList()
         results.clear()
         condResults.clear()
+        if (silent) return
         rebuildMarkers()
         updateInfo()
         toast(
@@ -187,7 +189,7 @@ class EditorOverlay(
         )
     }
 
-    private fun exitBranch() {
+    private fun exitBranch(silent: Boolean = false) {
         if (stack.isEmpty()) return
         closeSheet()
         val ctx = stack.removeAt(stack.lastIndex)
@@ -196,6 +198,7 @@ class EditorOverlay(
         steps = p
         results.clear()
         condResults.clear()
+        if (silent) return
         rebuildMarkers()
         updateInfo()
     }
@@ -204,13 +207,13 @@ class EditorOverlay(
 
     private fun addTap() {
         val off = (steps.size % 6) * dp(36)
-        steps.add(Step(StepType.CLICK, x = screenW / 2 + off - dp(90), y = screenH / 2 + off - dp(90)))
+        addStep(Step(StepType.CLICK, x = screenW / 2 + off - dp(90), y = screenH / 2 + off - dp(90)))
         changed()
         toast("Drag the dot to the spot. Tap it for settings.")
     }
 
     private fun addSwipe() {
-        steps.add(Step(StepType.SWIPE, x = screenW / 2, y = (screenH * 0.65).toInt(), x2 = screenW / 2, y2 = (screenH * 0.35).toInt()))
+        addStep(Step(StepType.SWIPE, x = screenW / 2, y = (screenH * 0.65).toInt(), x2 = screenW / 2, y2 = (screenH * 0.35).toInt()))
         changed()
         toast("Drag both dots. Tap one for settings.")
     }
@@ -227,7 +230,7 @@ class EditorOverlay(
         val n = steps.count { it.type == StepType.CLICK_IMAGE } + 1
         val w = (screenW * 0.38).toInt()
         val h = (w * 0.55).toInt()
-        steps.add(
+        addStep(
             Step(
                 type = StepType.CLICK_IMAGE,
                 label = "Picture $n",
@@ -237,6 +240,14 @@ class EditorOverlay(
         )
         changed()
         toast("Move the box over the picture, then tap it.")
+    }
+
+    private var insertAt: Int? = null
+
+    private fun addStep(st: Step) {
+        val at = insertAt
+        if (at != null && at in 0..steps.size) steps.add(at, st) else steps.add(st)
+        insertAt = null
     }
 
     private fun changed() {
@@ -358,15 +369,34 @@ class EditorOverlay(
         applyVisibility(true)
     }
 
-    /** Shows or hides every editor window. Markers also follow the Markers button. */
+    /** Shows or hides every editor window. The list and the markers are two modes of the same editor. */
     private fun applyVisibility(visible: Boolean) {
         val v = if (visible) View.VISIBLE else View.INVISIBLE
-        toolbar?.visibility = v
+        val toolbarOn = visible && !listMode
+        val panelOn = visible && listMode
+        toolbar?.visibility = if (toolbarOn) View.VISIBLE else View.INVISIBLE
+        setTouchable(toolbar, toolbarOn)
+        panel?.visibility = if (panelOn) View.VISIBLE else View.INVISIBLE
+        setTouchable(panel, panelOn)
         sheet?.visibility = v
         dialog?.visibility = v
-        val mv = if (visible && markersShown) View.VISIBLE else View.INVISIBLE
+        val mv = if (toolbarOn && markersShown) View.VISIBLE else View.INVISIBLE
         markers.forEach { it.visibility = mv }
         linesView?.visibility = mv
+    }
+
+    /** A hidden window must also stop taking touches, or it would block the app underneath. */
+    private fun setTouchable(v: View?, touchable: Boolean) {
+        val lp = v?.layoutParams as? WindowManager.LayoutParams ?: return
+        val flag = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        val has = lp.flags and flag != 0
+        if (touchable && has) {
+            lp.flags = lp.flags and flag.inv()
+            wm.updateViewLayout(v, lp)
+        } else if (!touchable && !has) {
+            lp.flags = lp.flags or flag
+            wm.updateViewLayout(v, lp)
+        }
     }
 
     /** Hides the editor, waits for the screen to redraw, runs [block], and shows the editor again. */
@@ -658,7 +688,6 @@ class EditorOverlay(
         root.addView(ScrollView(ctx).apply { addView(body) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(8) })
         root.addView(
             Ui.button(ctx, "Delete this condition", TokenInts.surfaceHigh, TokenInts.danger) {
-                TemplateStore.delete(c.templateId)
                 edit(i) { st -> st.copy(conditions = st.conditions.filterIndexed { k, _ -> k != j }) }
                 closeSheet()
                 rebuildMarkers()
@@ -684,7 +713,6 @@ class EditorOverlay(
             val w = c.boxW.coerceIn(2, frame.width - x)
             val h = c.boxH.coerceIn(2, frame.height - y)
             val newId = TemplateStore.save(Bitmap.createBitmap(frame, x, y, w, h))
-            if (c.templateId.isNotEmpty()) TemplateStore.delete(c.templateId)
             editCond(i, j) { it.copy(templateId = newId, capW = frame.width, capH = frame.height) }
             condResults.remove(i * 100 + j)
             then()
@@ -717,9 +745,17 @@ class EditorOverlay(
                 c.mustAppear -> "Not on screen (best ${(res.score * 100).toInt()}%). The condition does NOT hold."
                 else -> "Not on screen, as wanted (best ${(res.score * 100).toInt()}%). The condition holds."
             }.let { if (pass || res.tooPlain) it else it }
-            openConditionSheet(i, j)
-            delay(2500)
-            removeMatchBox()
+            if (listMode) {
+                applyVisibility(false)
+                toast(condResults[i * 100 + j] ?: "")
+                delay(2500)
+                removeMatchBox()
+                applyVisibility(true)
+            } else {
+                openConditionSheet(i, j)
+                delay(2500)
+                removeMatchBox()
+            }
         }
     }
 
@@ -998,9 +1034,17 @@ class EditorOverlay(
                 res.found -> "Found, ${(res.score * 100).toInt()}% in ${res.ms} ms"
                 else -> "Not found. Best match was ${(res.score * 100).toInt()}%, needs ${s.threshold}% (${res.ms} ms)."
             }
-            openSheet(index, 0)
-            delay(2500)
-            removeMatchBox()
+            if (listMode) {
+                applyVisibility(false)
+                toast(results[index] ?: "")
+                delay(2500)
+                removeMatchBox()
+                applyVisibility(true)
+            } else {
+                openSheet(index, 0)
+                delay(2500)
+                removeMatchBox()
+            }
         }
     }
 
@@ -1097,6 +1141,554 @@ class EditorOverlay(
         }
     }
 
+
+    // ================================================================ The Abstract list (main editor view)
+
+    private var listMode = true
+    private var panel: View? = null
+    private var panelScroll: ScrollView? = null
+    private var panelScrollY = 0
+
+    private class Row(val text: String, val color: Int = TokenInts.text, val action: (() -> Unit)? = null)
+
+    private fun enterListMode() {
+        closeSheet()
+        closeDialog()
+        removeMatchBox()
+        listMode = true
+        refreshPanel()
+    }
+
+    private fun enterMarkerMode(msg: String?) {
+        closeSheet()
+        closeDialog()
+        listMode = false
+        rebuildMarkers()
+        applyVisibility(true)
+        updateInfo()
+        if (msg != null) toast(msg)
+    }
+
+    private fun currentPath(): List<Pair<Int, Boolean>> = stack.map { it.index to it.onSuccess }
+
+    /** Makes the list at [path] the one being edited. */
+    private fun goTo(path: List<Pair<Int, Boolean>>) {
+        while (stack.isNotEmpty()) exitBranch(silent = true)
+        for ((i, ok) in path) enterBranch(i, ok, silent = true)
+    }
+
+    private fun listChanged() {
+        dirty = true
+        rebuildMarkers()
+        updateInfo()
+        refreshPanel()
+    }
+
+    private fun countAll(list: List<Step>): Int = list.size + list.sumOf { countAll(it.onSuccess) + countAll(it.onFail) }
+
+    private fun weightLp() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+        setMargins(dp(3), dp(3), dp(3), dp(3))
+    }
+
+    private fun refreshPanel() {
+        panelScroll?.let { panelScrollY = it.scrollY }
+        panel?.let { runCatching { wm.removeView(it) } }
+        panel = null
+        panelScroll = null
+        val whole = snapshotRoot()
+
+        val rootView = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(8))
+            background = Ui.rounded(0xFA0F1115.toInt(), dp(20).toFloat())
+        }
+        rootView.addView(label(macroName, 22f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+        val n = countAll(whole)
+        rootView.addView(
+            label((if (n == 1) "1 step" else "$n steps") + (if (dirty) "  (not saved)" else ""), 13f, TokenInts.textMuted),
+            lp(0),
+        )
+        val buttons = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        buttons.addView(ToolButton(ctx, Icon.PLAY, "Test run", TokenInts.success) { testRun() }, weightLp())
+        buttons.addView(ToolButton(ctx, Icon.PLUS, "Add") { openAddPicker(emptyList(), null) }, weightLp())
+        buttons.addView(ToolButton(ctx, Icon.EYE, "On screen") { enterMarkerMode("Drag the markers. Tap List to come back.") }, weightLp())
+        buttons.addView(ToolButton(ctx, Icon.SAVE, "Save") { save(); refreshPanel(); toast("Saved") }, weightLp())
+        buttons.addView(ToolButton(ctx, Icon.CLOSE, "Close", TokenInts.danger) { requestClose() }, weightLp())
+        rootView.addView(buttons, lp(8))
+
+        val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        if (whole.isEmpty()) {
+            body.addView(label("No steps yet. Press Add to make the first one.", 17f, TokenInts.textMuted), lp(16))
+        } else {
+            renderSteps(body, whole, emptyList(), 0, "")
+        }
+        val scroll = ScrollView(ctx).apply {
+            addView(body)
+            isVerticalScrollBarEnabled = true
+        }
+        panelScroll = scroll
+        rootView.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(8) })
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            (screenH * 0.93).toInt(),
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP
+            y = dp(24)
+        }
+        wm.addView(rootView, params)
+        panel = rootView
+        scroll.post { scroll.scrollTo(0, panelScrollY) }
+        applyVisibility(true)
+    }
+
+    private fun renderSteps(box: LinearLayout, list: List<Step>, path: List<Pair<Int, Boolean>>, depth: Int, prefix: String) {
+        list.forEachIndexed { i, s ->
+            val num = if (prefix.isEmpty()) "${i + 1}" else "$prefix.${i + 1}"
+            box.addView(buildCard(s, path, i, num), lp(8))
+            if (s.onSuccess.isNotEmpty()) addBranch(box, s.onSuccess, path + (i to true), depth, num, true)
+            if (s.onFail.isNotEmpty()) addBranch(box, s.onFail, path + (i to false), depth, num, false)
+        }
+    }
+
+    private fun addBranch(box: LinearLayout, list: List<Step>, path: List<Pair<Int, Boolean>>, depth: Int, num: String, ifTrue: Boolean) {
+        val group = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(8), dp(8), dp(6))
+            background = Ui.rounded(if (ifTrue) 0x264ADE80 else 0x26FBBF24, dp(16).toFloat())
+        }
+        val head = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            setOnClickListener { openAddPicker(path, null) }
+        }
+        head.addView(
+            label(if (ifTrue) "If true" else "If false", 18f, if (ifTrue) TokenInts.success else TokenInts.warning)
+                .apply { setTypeface(typeface, android.graphics.Typeface.BOLD) },
+        )
+        head.addView(
+            label(if (ifTrue) "   step $num worked, then:" else "   step $num never found what it needs, then:", 13f, TokenInts.textMuted),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        head.addView(label("+", 22f, TokenInts.primary).apply { setPadding(dp(12), 0, dp(8), 0) })
+        group.addView(head)
+        renderSteps(group, list, path, depth + 1, num)
+        val lpGroup = lp(6).apply { marginStart = dp(16) }
+        box.addView(group, lpGroup)
+    }
+
+    private fun headline(s: Step): String = when (s.type) {
+        StepType.CLICK -> "Tap  (${s.x}, ${s.y})"
+        StepType.SWIPE -> "Swipe  (${s.x}, ${s.y}) to (${s.x2}, ${s.y2})"
+        StepType.WAIT -> "Wait  ${s.ms / 1000.0} s"
+        StepType.CLICK_IMAGE -> "Tap the picture  \"${s.label}\""
+        StepType.STOP_MACRO -> "Stop the macro"
+    }
+
+    private fun subline(s: Step): String {
+        val parts = ArrayList<String>()
+        if (s.type == StepType.CLICK || s.type == StepType.SWIPE || s.type == StepType.CLICK_IMAGE) {
+            parts.add("x${s.repeatCount}")
+            parts.add("wait ${s.delayMs} ms before, ${s.waitNextMs} ms after")
+            if (s.holdMs > 0 && s.type != StepType.SWIPE) parts.add("hold ${s.holdMs} ms")
+        }
+        if (!s.enabled) parts.add("OFF")
+        return parts.joinToString("   ·   ")
+    }
+
+    private fun circle(text: String, fill: Int, textColor: Int, sizeDp: Int): TextView = TextView(ctx).apply {
+        this.text = text
+        textSize = sizeDp * 0.42f
+        setTextColor(textColor)
+        gravity = Gravity.CENTER
+        background = Ui.rounded(fill, dp(sizeDp) / 2f)
+    }
+
+    private fun chip(text: String, color: Int, onClick: () -> Unit): TextView = TextView(ctx).apply {
+        this.text = text
+        textSize = 16f
+        setTextColor(TokenInts.onPrimary)
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+        setPadding(dp(16), dp(8), dp(16), dp(8))
+        background = Ui.rounded(color, dp(20).toFloat())
+        isClickable = true
+        setOnClickListener { onClick() }
+    }
+
+    /** One line of the logic tree: a round mark, the picture, and what has to be true. */
+    private fun logicRow(templateId: String, text: String, ok: Boolean, onClick: () -> Unit): View {
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(6), dp(4), dp(6))
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+        row.addView(circle(if (ok) "✓" else "✕", if (ok) TokenInts.success else TokenInts.danger, TokenInts.onPrimary, 34), LinearLayout.LayoutParams(dp(34), dp(34)))
+        thumb(templateId, 64)?.let { row.addView(it, LinearLayout.LayoutParams(dp(76), dp(44)).apply { marginStart = dp(10) }) }
+        row.addView(label(text, 16f, TokenInts.text), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) })
+        return row
+    }
+
+    private fun buildCard(s: Step, path: List<Pair<Int, Boolean>>, i: Int, num: String): View {
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(12), dp(12))
+            background = Ui.rounded(if (s.enabled) 0xFF242833.toInt() else 0xFF1A1D24.toInt(), dp(16).toFloat())
+            alpha = if (s.enabled) 1f else 0.55f
+            isClickable = true
+            setOnClickListener { openCardMenu(path, i) }
+        }
+        val top = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val glyph = when (s.type) {
+            StepType.CLICK -> "●"
+            StepType.SWIPE -> "➜"
+            StepType.WAIT -> "⏱"
+            StepType.CLICK_IMAGE -> "▣"
+            StepType.STOP_MACRO -> "■"
+        }
+        top.addView(circle(glyph, TokenInts.primary, TokenInts.onPrimary, 46), LinearLayout.LayoutParams(dp(46), dp(46)))
+        val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(label(headline(s), 18f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+        val sub = subline(s)
+        if (sub.isNotEmpty()) col.addView(label(sub, 12f, TokenInts.textMuted))
+        top.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(12) })
+        top.addView(
+            label(num, 14f, TokenInts.onPrimary).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(10), dp(2), dp(10), dp(2))
+                background = Ui.rounded(TokenInts.primary, dp(8).toFloat())
+            },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) },
+        )
+        card.addView(top)
+
+        // the logic tree: this step's own picture, then the extra conditions
+        val tree = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(4), 0, 0)
+        }
+        var hasTree = false
+        if (s.type == StepType.CLICK_IMAGE) {
+            tree.addView(logicRow(s.templateId, "Picture appears  ${s.threshold}%" + if (s.wholeScreen) "  (whole screen)" else "", true) { openCardMenu(path, i) })
+            hasTree = true
+        }
+        s.conditions.forEachIndexed { j, c ->
+            if (hasTree || j > 0) {
+                val allTrue = j == 0 || !s.anyOf
+                val chipRow = LinearLayout(ctx).apply { setPadding(dp(46), dp(2), 0, dp(2)) }
+                chipRow.addView(
+                    chip(if (allTrue) "All true" else "Any true", TokenInts.success) {
+                        goTo(path)
+                        edit(i) { it.copy(anyOf = !it.anyOf) }
+                        listChanged()
+                    },
+                )
+                tree.addView(chipRow)
+            }
+            tree.addView(
+                logicRow(
+                    c.templateId,
+                    (if (c.mustAppear) "Picture appears  " else "Picture is NOT on screen  ") + "${c.threshold}%",
+                    c.mustAppear,
+                ) { openConditionMenu(path, i, j) },
+            )
+            hasTree = true
+        }
+        if (hasTree) card.addView(tree)
+        return card
+    }
+
+    // ---------------------------------------------------------------- big menus
+
+    private fun showBigMenu(title: String, rows: List<Row>) {
+        closeDialog()
+        val box = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(12), dp(8), dp(8))
+            background = Ui.rounded(0xFF1A1D24.toInt(), dp(20).toFloat())
+        }
+        box.addView(label(title, 18f, TokenInts.text).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(dp(14), dp(2), dp(14), dp(10))
+        })
+        val list = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        for (r in rows) {
+            val act = r.action
+            list.addView(
+                TextView(ctx).apply {
+                    text = r.text
+                    textSize = if (act == null) 14f else 20f
+                    setTextColor(if (act == null) TokenInts.textMuted else r.color)
+                    gravity = Gravity.CENTER_VERTICAL
+                    minHeight = dp(if (act == null) 34 else 60)
+                    setPadding(dp(14), dp(if (act == null) 10 else 6), dp(14), dp(6))
+                    if (act != null) {
+                        isClickable = true
+                        setOnClickListener { act() }
+                    }
+                },
+            )
+        }
+        list.addView(
+            TextView(ctx).apply {
+                text = "Cancel"
+                textSize = 20f
+                setTextColor(TokenInts.textMuted)
+                gravity = Gravity.CENTER_VERTICAL
+                minHeight = dp(60)
+                setPadding(dp(14), dp(6), dp(14), dp(6))
+                isClickable = true
+                setOnClickListener { closeDialog() }
+            },
+        )
+        box.addView(ScrollView(ctx).apply { addView(list) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        val h = minOf((screenH * 0.8).toInt(), dp(60 * rows.size + 150))
+        val params = WindowManager.LayoutParams(
+            (screenW * 0.92).toInt(), h,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.CENTER }
+        wm.addView(box, params)
+        dialog = box
+    }
+
+    private fun showEditDialog(title: String, build: (LinearLayout) -> Unit) {
+        showDialog { box ->
+            box.addView(label(title, 20f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+            build(box)
+            box.addView(Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) {
+                closeDialog()
+                listChanged()
+            }, lp(16))
+        }
+    }
+
+    private fun openAddPicker(target: List<Pair<Int, Boolean>>, insertIndex: Int?) {
+        fun go(after: () -> Unit) {
+            closeDialog()
+            goTo(target)
+            insertAt = insertIndex
+            after()
+        }
+        showBigMenu(
+            "Add a step",
+            listOf(
+                Row("Gestures"),
+                Row("Tap a spot") { go { addTap(); enterMarkerMode("Drag the dot to the spot. Tap List to come back.") } },
+                Row("Swipe") { go { addSwipe(); enterMarkerMode("Drag both dots. Tap List to come back.") } },
+                Row("Picture"),
+                Row("Find and tap a picture") {
+                    go {
+                        if (!CaptureService.running) {
+                            insertAt = null
+                            showCaptureNeeded()
+                        } else {
+                            addPicture()
+                            enterMarkerMode("Move the box over the picture, tap it to capture. Tap List to come back.")
+                        }
+                    }
+                },
+                Row("Macro"),
+                Row("Wait 1 second") { go { addStep(Step(StepType.WAIT, ms = 1000)); listChanged() } },
+                Row("Stop the macro", TokenInts.danger) { go { addStep(Step(StepType.STOP_MACRO)); listChanged() } },
+            ),
+        )
+    }
+
+    private fun openCardMenu(path: List<Pair<Int, Boolean>>, i: Int) {
+        goTo(path)
+        if (i !in steps.indices) return
+        val s = steps[i]
+        val rows = ArrayList<Row>()
+        val movable = s.type == StepType.CLICK || s.type == StepType.SWIPE || s.type == StepType.CLICK_IMAGE
+        val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO
+
+        if (movable) rows.add(Row("Move on screen") { enterMarkerMode("Drag it. Tap List to come back.") })
+        if (s.type == StepType.CLICK_IMAGE) {
+            rows.add(Row("Change picture") { enterMarkerMode("Move the box over the new picture, tap it, then Capture again.") })
+            rows.add(Row("Edit picture settings") { editPictureDialog(i) })
+            rows.add(Row("Test now") { closeDialog(); testPicture(i) })
+        }
+        if (s.type == StepType.WAIT) rows.add(Row("Edit wait time") { editWaitDialog(i) })
+        if (s.type == StepType.SWIPE) rows.add(Row("Edit swipe speed") { editSwipeDialog(i) })
+        if (movable) {
+            rows.add(Row("Edit delay") { editDelayDialog(i) })
+            if (s.type != StepType.SWIPE) rows.add(Row("Edit tap style") { editTapDialog(i) })
+        }
+        if (logical) {
+            rows.add(Row("Add condition: picture is on screen") { addConditionFromList(path, i, true) })
+            rows.add(Row("Add condition: picture is NOT on screen") { addConditionFromList(path, i, false) })
+            rows.add(Row("Add step if true", TokenInts.success) { openAddPicker(path + (i to true), null) })
+            rows.add(Row("Add step if false", TokenInts.warning) { openAddPicker(path + (i to false), null) })
+        }
+        rows.add(Row("Add step above") { openAddPicker(path, i) })
+        rows.add(Row("Move up") { closeDialog(); if (i > 0) { val t = steps[i]; steps[i] = steps[i - 1]; steps[i - 1] = t; listChanged() } })
+        rows.add(Row("Move down") { closeDialog(); if (i < steps.size - 1) { val t = steps[i]; steps[i] = steps[i + 1]; steps[i + 1] = t; listChanged() } })
+        rows.add(Row("Copy") { closeDialog(); steps.add(i + 1, steps[i]); listChanged() })
+        rows.add(Row(if (s.enabled) "Disable" else "Enable") { closeDialog(); edit(i) { it.copy(enabled = !it.enabled) }; listChanged() })
+        rows.add(Row("Delete", TokenInts.danger) { closeDialog(); steps.removeAt(i); listChanged() })
+        showBigMenu(headline(s), rows)
+    }
+
+    private fun openConditionMenu(path: List<Pair<Int, Boolean>>, i: Int, j: Int) {
+        goTo(path)
+        if (i !in steps.indices || j !in steps[i].conditions.indices) return
+        val c = steps[i].conditions[j]
+        showBigMenu(
+            "Condition ${i + 1}${letter(j)}",
+            listOf(
+                Row("Move on screen / change picture") { enterMarkerMode("Move the box, tap it, then Capture again.") },
+                Row("Test now") { closeDialog(); testCondition(i, j) },
+                Row(if (c.mustAppear) "Change to: must NOT be on screen" else "Change to: must be on screen") {
+                    closeDialog()
+                    editCond(i, j) { it.copy(mustAppear = !it.mustAppear) }
+                    listChanged()
+                },
+                Row("Edit how exact") {
+                    showEditDialog("How exact?") { box ->
+                        box.addView(
+                            stepper("Match", { "${steps[i].conditions[j].threshold}%" },
+                                { editCond(i, j) { it.copy(threshold = (it.threshold - 1).coerceAtLeast(70)) } },
+                                { editCond(i, j) { it.copy(threshold = (it.threshold + 1).coerceAtMost(99)) } }),
+                            lp(12),
+                        )
+                    }
+                },
+                Row("Delete condition", TokenInts.danger) {
+                    closeDialog()
+                    edit(i) { st -> st.copy(conditions = st.conditions.filterIndexed { k, _ -> k != j }) }
+                    listChanged()
+                },
+            ),
+        )
+    }
+
+    private fun addConditionFromList(path: List<Pair<Int, Boolean>>, i: Int, mustAppear: Boolean) {
+        closeDialog()
+        goTo(path)
+        if (!CaptureService.running) {
+            showCaptureNeeded()
+            return
+        }
+        if (!Matcher.ensureLoaded()) {
+            toast("The picture finder could not start.")
+            return
+        }
+        val n = steps[i].conditions.size
+        val w = (screenW * 0.30).toInt()
+        val h = (w * 0.5).toInt()
+        val c = Condition(
+            label = "Condition ${i + 1}${letter(n)}",
+            mustAppear = mustAppear,
+            boxX = ((screenW - w) / 2 + n * dp(24)).coerceAtLeast(0),
+            boxY = ((screenH - h) / 3 + n * dp(24)).coerceAtLeast(0),
+            boxW = w, boxH = h, capW = screenW, capH = screenH,
+        )
+        edit(i) { it.copy(conditions = it.conditions + c) }
+        enterMarkerMode("Move the box over it, then tap the box to capture it. Tap List to come back.")
+    }
+
+    // ---------------------------------------------------------------- edit dialogs (big steppers)
+
+    private fun editDelayDialog(i: Int) = showEditDialog("Edit delay") { box ->
+        box.addView(
+            stepper("Wait before", { "${steps[i].delayMs} ms" },
+                { edit(i) { it.copy(delayMs = (it.delayMs - 100).coerceAtLeast(0)) } },
+                { edit(i) { it.copy(delayMs = (it.delayMs + 100).coerceAtMost(30_000)) } }),
+            lp(12),
+        )
+        box.addView(
+            stepper("Wait after", { "${steps[i].waitNextMs} ms" },
+                { edit(i) { it.copy(waitNextMs = (it.waitNextMs - 100).coerceAtLeast(0)) } },
+                { edit(i) { it.copy(waitNextMs = (it.waitNextMs + 100).coerceAtMost(30_000)) } }),
+            lp(10),
+        )
+    }
+
+    private fun editTapDialog(i: Int) = showEditDialog("Edit tap style") { box ->
+        box.addView(
+            stepper("Hold", { if (steps[i].holdMs == 0L) "quick" else "${steps[i].holdMs} ms" },
+                { edit(i) { it.copy(holdMs = (it.holdMs - 10).coerceAtLeast(0)) } },
+                { edit(i) { it.copy(holdMs = (it.holdMs + 10).coerceAtMost(3000)) } }),
+            lp(12),
+        )
+        box.addView(
+            stepper("Repeat", { "${steps[i].repeatCount}x" },
+                { edit(i) { it.copy(repeatCount = (it.repeatCount - 1).coerceAtLeast(1)) } },
+                { edit(i) { it.copy(repeatCount = (it.repeatCount + 1).coerceAtMost(99)) } }),
+            lp(10),
+        )
+        box.addView(
+            stepper("Random offset", { "${steps[i].randomizePx} px" },
+                { edit(i) { it.copy(randomizePx = (it.randomizePx - 1).coerceAtLeast(0)) } },
+                { edit(i) { it.copy(randomizePx = (it.randomizePx + 1).coerceAtMost(50)) } }),
+            lp(10),
+        )
+    }
+
+    private fun editWaitDialog(i: Int) = showEditDialog("Edit wait time") { box ->
+        box.addView(
+            stepper("Wait", { "${steps[i].ms / 1000.0} s" },
+                { edit(i) { it.copy(ms = (it.ms - 500).coerceAtLeast(500)) } },
+                { edit(i) { it.copy(ms = (it.ms + 500).coerceAtMost(60_000)) } }),
+            lp(12),
+        )
+    }
+
+    private fun editSwipeDialog(i: Int) = showEditDialog("Edit swipe speed") { box ->
+        box.addView(
+            stepper("How long", { "${steps[i].swipeMs} ms" },
+                { edit(i) { it.copy(swipeMs = (it.swipeMs - 50).coerceAtLeast(100)) } },
+                { edit(i) { it.copy(swipeMs = (it.swipeMs + 50).coerceAtMost(3000)) } }),
+            lp(12),
+        )
+        box.addView(
+            stepper("Repeat", { "${steps[i].repeatCount}x" },
+                { edit(i) { it.copy(repeatCount = (it.repeatCount - 1).coerceAtLeast(1)) } },
+                { edit(i) { it.copy(repeatCount = (it.repeatCount + 1).coerceAtMost(99)) } }),
+            lp(10),
+        )
+    }
+
+    private fun editPictureDialog(i: Int) = showEditDialog("Edit picture settings") { box ->
+        box.addView(
+            stepper("How exact?", { "${steps[i].threshold}%" },
+                { edit(i) { it.copy(threshold = (it.threshold - 1).coerceAtLeast(70)) } },
+                { edit(i) { it.copy(threshold = (it.threshold + 1).coerceAtMost(99)) } }),
+            lp(12),
+        )
+        box.addView(
+            stepper("Look for", { "${steps[i].timeoutMs / 1000} s" },
+                { edit(i) { it.copy(timeoutMs = (it.timeoutMs - 1000).coerceAtLeast(1000)) } },
+                { edit(i) { it.copy(timeoutMs = (it.timeoutMs + 1000).coerceAtMost(120_000)) } }),
+            lp(10),
+        )
+        box.addView(toggle("Where to look", { if (steps[i].wholeScreen) "Whole screen" else "Near the box" }) {
+            edit(i) { it.copy(wholeScreen = !it.wholeScreen) }
+        }, lp(10))
+        box.addView(toggle("Picture size", { if (steps[i].flexScale) "Allow a little bigger or smaller" else "Same size only" }) {
+            edit(i) { it.copy(flexScale = !it.flexScale) }
+        }, lp(10))
+        box.addView(toggle("If it shows up more than once", { if (steps[i].matchAll) "Tap every one" else "Tap the best match only" }) {
+            edit(i) { it.copy(matchAll = !it.matchAll) }
+        }, lp(10))
+        box.addView(toggle("If it is not found", { if (steps[i].skipIfMissing) "Skip this step" else "Stop the macro" }) {
+            edit(i) { it.copy(skipIfMissing = !it.skipIfMissing) }
+        }, lp(10))
+    }
+
     // ================================================================ small ui helpers
 
     private fun showDialog(build: (LinearLayout) -> Unit) {
@@ -1108,7 +1700,7 @@ class EditorOverlay(
         }
         build(box)
         val params = WindowManager.LayoutParams(
-            dp(300), WindowManager.LayoutParams.WRAP_CONTENT,
+            (screenW * 0.92).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
@@ -1133,7 +1725,7 @@ class EditorOverlay(
             Ui.button(ctx, t, TokenInts.surfaceHigh, TokenInts.text) { f(); valueView.text = value() }.apply { minWidth = dp(48) }
         }
         row.addView(small("-", onMinus), LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)))
-        row.addView(valueView, LinearLayout.LayoutParams(dp(84), LinearLayout.LayoutParams.WRAP_CONTENT))
+        row.addView(valueView, LinearLayout.LayoutParams(dp(104), LinearLayout.LayoutParams.WRAP_CONTENT))
         row.addView(small("+", onPlus), LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)))
         return row
     }
@@ -1151,7 +1743,7 @@ class EditorOverlay(
 
     private fun label(text: String, size: Float, color: Int) = TextView(ctx).apply {
         this.text = text
-        textSize = size
+        textSize = size * 1.2f
         setTextColor(color)
     }
 

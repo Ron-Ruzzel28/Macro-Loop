@@ -13,6 +13,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +52,10 @@ class MacroService : AccessibilityService() {
     private var runBar: View? = null
     private var runStatus: TextView? = null
     private var editor: EditorOverlay? = null
+    private var playPanel: View? = null
+    private var playMacroId: String? = null
+    private var playX = 24
+    private var playY = 220
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -71,6 +76,7 @@ class MacroService : AccessibilityService() {
         instance = null
         stopRun()
         closeEditor()
+        closePlayPanel()
         return super.onUnbind(intent)
     }
 
@@ -84,6 +90,7 @@ class MacroService : AccessibilityService() {
 
     fun startEditor(macroId: String) {
         stopRun()
+        closePlayPanel()
         closeEditor()
         val macro = MacroRepository.get(macroId) ?: return
         editor = EditorOverlay(this, wm, macro, scope) { closeEditor() }
@@ -95,15 +102,114 @@ class MacroService : AccessibilityService() {
         editor = null
     }
 
+    private fun toastText(t: String) = Toast.makeText(this, t, Toast.LENGTH_LONG).show()
+
     // ---------------------------------------------------------------- running
 
     fun isRunning() = runJob?.isActive == true
 
-    /** Run a saved macro from the app. Closes the editor first. */
-    fun startRun(macroId: String, countdownSeconds: Int = 3) {
+    /**
+     * Opens the floating Play button for a saved macro. The macro does NOT start until the
+     * user presses Play, so there is time to open the game or app first.
+     */
+    fun showPlayPanel(macroId: String) {
         val macro = MacroRepository.get(macroId) ?: return
         closeEditor()
-        runMacro(macro, countdownSeconds, null)
+        stopRun()
+        removePlayPanel()
+        playMacroId = macroId
+
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(8), dp(8))
+            background = Ui.rounded(0xF01A1D24.toInt(), dp(20).toFloat())
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(TextView(this).apply {
+            text = macro.name
+            textSize = 20f
+            setTextColor(TokenInts.text)
+            maxLines = 1
+            maxWidth = dp(150)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+        col.addView(TextView(this).apply {
+            text = "Ready. Open your app, then press Play."
+            textSize = 13f
+            setTextColor(TokenInts.textMuted)
+            maxWidth = dp(150)
+        })
+        bar.addView(col, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val play = Ui.button(this, "Play", TokenInts.primary, TokenInts.onPrimary) { startFromPlayPanel() }
+        bar.addView(play, LinearLayout.LayoutParams(dp(92), dp(56)).apply { marginStart = dp(10) })
+        val close = Ui.button(this, "X", TokenInts.surfaceHigh, TokenInts.text) { closePlayPanel() }
+        bar.addView(close, LinearLayout.LayoutParams(dp(56), dp(56)).apply { marginStart = dp(8) })
+
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = playX
+            y = playY
+        }
+        // Drag the panel by its name.
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        col.setOnTouchListener { _, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    lp.x = startX + (e.rawX - downX).toInt()
+                    lp.y = startY + (e.rawY - downY).toInt()
+                    playX = lp.x; playY = lp.y
+                    wm.updateViewLayout(bar, lp)
+                }
+            }
+            true
+        }
+        wm.addView(bar, lp)
+        playPanel = bar
+    }
+
+    private fun startFromPlayPanel() {
+        val id = playMacroId ?: return
+        val macro = MacroRepository.get(id) ?: return
+        if (macro.steps.isEmpty()) {
+            Toast.makeText(this, "This macro has no steps yet. Open the editor and add some.", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (needsCapture(macro.steps) && !CaptureService.running) {
+            Toast.makeText(this, "Screen capture is off. Open MacroLoop and press Run again.", Toast.LENGTH_LONG).show()
+            return
+        }
+        removePlayPanel()
+        runMacro(macro, 3) {
+            // Back to the Play button when the run ends or is stopped, unless a new run started.
+            if (playMacroId == id && !isRunning()) showPlayPanel(id)
+        }
+    }
+
+    private fun closePlayPanel() {
+        playMacroId = null
+        removePlayPanel()
+    }
+
+    private fun removePlayPanel() {
+        playPanel?.let { runCatching { wm.removeView(it) } }
+        playPanel = null
+    }
+
+    private fun needsCapture(list: List<Step>): Boolean = list.any {
+        it.type == StepType.CLICK_IMAGE || it.conditions.isNotEmpty() || needsCapture(it.onSuccess) || needsCapture(it.onFail)
     }
 
     /** Run the given macro now. [onFinished] is called when it ends, is stopped, or fails. */
@@ -175,6 +281,7 @@ class MacroService : AccessibilityService() {
      * Returns a message if the macro must stop.
      */
     private suspend fun runStep(macroName: String, where: String, step: Step, human: Boolean): String? {
+        if (!step.enabled) return null
         if (step.type == StepType.WAIT) {
             delay(waitTime(step.ms, human))
             return null
