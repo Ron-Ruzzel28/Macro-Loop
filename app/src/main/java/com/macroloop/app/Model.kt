@@ -90,11 +90,15 @@ data class Step(
     val capH: Int = 0,
     // action settings
     val holdMs: Long = 0,               // 0 = quick tap, more = long click
-    val clicks: Int = 1,                // click style: 1 single, 2 double, 3 triple
+    val clicks: Int = 1,                // how many clicks in a row (1 to 99)
     val repeatCount: Int = 1,           // run the whole step this many times
     val delayMs: Long = 0,              // wait before this step
     val waitNextMs: Long = 100,         // wait after this step
     val randomizePx: Int = 0,           // random offset on every tap
+    val clickGapMs: Long = 90,          // wait between the clicks of a double or triple click
+    val twoFingers: Boolean = false,    // tap or hold with two fingers at once
+    val holdUntil: Condition? = null,   // hold the press until this picture appears (or disappears)
+    val holdMaxMs: Long = 10_000,       // the longest a hold-until may last
     val offsetX: Int = 0,               // move the tap from the middle of what was found
     val offsetY: Int = 0,
     // conditions: the step runs only when these hold
@@ -152,6 +156,10 @@ data class Step(
         .put("delayMs", delayMs)
         .put("waitNextMs", waitNextMs)
         .put("randomizePx", randomizePx)
+        .put("clickGapMs", clickGapMs)
+        .put("twoFingers", twoFingers)
+        .put("holdMaxMs", holdMaxMs)
+        .put("holdUntil", holdUntil?.toJson() ?: JSONObject.NULL)
         .put("offsetX", offsetX).put("offsetY", offsetY)
         .put("anyOf", anyOf)
         .put("enabled", enabled)
@@ -185,11 +193,15 @@ data class Step(
             boxW = o.optInt("boxW"), boxH = o.optInt("boxH"),
             capW = o.optInt("capW"), capH = o.optInt("capH"),
             holdMs = o.optLong("holdMs", 0),
-            clicks = o.optInt("clicks", 1).coerceIn(1, 3),
+            clicks = o.optInt("clicks", 1).coerceIn(1, 99),
             repeatCount = o.optInt("repeatCount", 1).coerceAtLeast(1),
             delayMs = o.optLong("delayMs", 0),
             waitNextMs = o.optLong("waitNextMs", 100),
             randomizePx = o.optInt("randomizePx", 0),
+            clickGapMs = o.optLong("clickGapMs", 90),
+            twoFingers = o.optBoolean("twoFingers", false),
+            holdMaxMs = o.optLong("holdMaxMs", 10_000),
+            holdUntil = o.optJSONObject("holdUntil")?.let { Condition.fromJson(it) },
             offsetX = o.optInt("offsetX", 0),
             offsetY = o.optInt("offsetY", 0),
             anyOf = o.optBoolean("anyOf", false),

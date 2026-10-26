@@ -384,7 +384,7 @@ class EditorOverlay(
 
     private fun sign(v: Int) = if (v >= 0) "+$v" else "$v"
 
-    private fun clickStyleCode(s: Step): String = "X${s.clicks}" + if (s.holdMs > 0) "H" else ""
+    private fun clickStyleCode(s: Step): String = "X${s.clicks}" + (if (s.holdMs > 0 || s.holdUntil != null) "H" else "") + (if (s.twoFingers) " 2F" else "")
 
     private fun targetName(s: Step): String {
         val k = root.indexOfFirst { it.id == s.targetId }
@@ -440,6 +440,10 @@ class EditorOverlay(
         when (s.type) {
             StepType.CLICK, StepType.CLICK_IMAGE -> {
                 parts.add("[${clickStyleCode(s)}]")
+                if (s.holdUntil != null) parts.add("[Hold until picture, max ${s.holdMaxMs / 1000}s]")
+                else if (s.holdMs > 0) parts.add("[Hold ${s.holdMs}ms]")
+                if (s.clicks > 1) parts.add("[Gap ${s.clickGapMs}ms]")
+                if (s.randomizePx > 0) parts.add("[Random ${s.randomizePx}px]")
                 parts.add("[Delay ${s.delayMs}ms/${s.waitNextMs}ms]")
             }
             StepType.SWIPE -> {
@@ -585,6 +589,14 @@ class EditorOverlay(
             val (content, second) = conditionContent(c)
             val ok = c.kind != ConditionKind.IMAGE || c.mustAppear
             tree.addView(treeRow(if (ok) "✓" else "✕", ok, content, second) { openConditionMenu(ref, j) })
+            rows++
+        }
+        s.holdUntil?.let { h ->
+            val (content, second) = conditionContent(h)
+            val hold = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+            hold.addView(label("Hold until:", 12f, TokenInts.warning))
+            hold.addView(content)
+            tree.addView(treeRow("⏳", true, hold, (second ?: "") + "  max ${s.holdMaxMs / 1000}s") { openHoldMenu(ref) })
             rows++
         }
         if (rows > 0) card.addView(tree)
@@ -947,7 +959,7 @@ class EditorOverlay(
             StepType.CLICK_IMAGE -> newOrExist { box, id, fw, fh ->
                 val n = flat(root).count { it.type == StepType.CLICK_IMAGE } + 1
                 finishAdd(target, Step(
-                    StepType.CLICK_IMAGE, templateId = id, label = "Image $n",
+                    StepType.CLICK_IMAGE, templateId = id, label = "Image $n", wholeScreen = true,
                     boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
                 ))
             }
@@ -1052,6 +1064,7 @@ class EditorOverlay(
                 add("Change Image", Icon.PENCIL) { closeMenu(); changeImage(ref) }
                 add("Edit Offset", Icon.PENCIL) { editOffsetDialog(ref) }
                 add("Edit Click Style", Icon.PENCIL) { editClickStyleDialog(ref) }
+                add(if (s.holdUntil == null) "Hold Until..." else "Edit Hold Until", Icon.PENCIL) { holdUntilEntry(ref) }
                 add("Edit Delay", Icon.PENCIL) { editDelayDialog(ref) }
                 add("Edit Image", Icon.PENCIL) { editImageDialog(ref) }
             }
@@ -1059,6 +1072,7 @@ class EditorOverlay(
                 add("Move Spot", Icon.PENCIL) { closeMenu(); moveSpot(ref) }
                 add("Edit Offset", Icon.PENCIL) { editOffsetDialog(ref) }
                 add("Edit Click Style", Icon.PENCIL) { editClickStyleDialog(ref) }
+                add(if (s.holdUntil == null) "Hold Until..." else "Edit Hold Until", Icon.PENCIL) { holdUntilEntry(ref) }
                 add("Edit Delay", Icon.PENCIL) { editDelayDialog(ref) }
             }
             StepType.SWIPE -> {
@@ -1177,14 +1191,25 @@ class EditorOverlay(
         val s = stepAt(ref) ?: return
         var dx: EditText? = null
         var dy: EditText? = null
+        var rnd: EditText? = null
         showForm(
             "Offset",
-            "Offset is the amount of pixels away from the middle of the found object. Positive dx offset to the right, negative dx offset to the left. Positive dy offset to the bottom, negative dy offset to the top.",
+            "Offset is the amount of pixels away from the middle of the found object. Positive dx offset to the right, negative dx offset to the left. Positive dy offset to the bottom, negative dy offset to the top. " +
+                "Random offset moves every tap a few pixels in a random direction, so no two taps land on exactly the same pixel.",
             { b ->
                 dx = field(b, "dx", s.offsetX.toString(), signed = true)
                 dy = field(b, "dy", s.offsetY.toString(), signed = true)
+                rnd = field(b, "Random offset (px)", s.randomizePx.toString())
             },
-            { edit(ref) { it.copy(offsetX = dx?.text.toString().toIntOrNull() ?: 0, offsetY = dy?.text.toString().toIntOrNull() ?: 0) } },
+            {
+                edit(ref) {
+                    it.copy(
+                        offsetX = dx?.text.toString().toIntOrNull() ?: 0,
+                        offsetY = dy?.text.toString().toIntOrNull() ?: 0,
+                        randomizePx = (rnd?.text.toString().toIntOrNull() ?: 0).coerceIn(0, 200),
+                    )
+                }
+            },
         )
     }
 
@@ -1205,11 +1230,106 @@ class EditorOverlay(
 
     private fun editClickStyleDialog(ref: Ref) {
         val s = stepAt(ref) ?: return
-        val names = listOf("Single Click (X1)", "Long Click (X1H)", "Double Click (X2)", "Double Click and Hold (X2H)", "Triple Click (X3)", "Triple Click and Hold (X3H)")
-        val current = (s.clicks - 1) * 2 + (if (s.holdMs > 0) 1 else 0)
-        showChoice("Click Style", names, current) { k ->
-            edit(ref) { it.copy(clicks = k / 2 + 1, holdMs = if (k % 2 == 1) 600L else 0L) }
+        var count: EditText? = null
+        var gap: EditText? = null
+        var hold: EditText? = null
+        var two = s.twoFingers
+        showForm(
+            "Click Style",
+            "Number of clicks happen one after another, with the gap between them. Hold keeps each click pressed for that long (0 is a quick tap). " +
+                "Two fingers presses with two fingers at once.",
+            { b ->
+                val presets = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+                listOf("Single" to (1 to 0), "Long" to (1 to 600), "Double" to (2 to 0), "Triple" to (3 to 0)).forEach { (name, v) ->
+                    presets.addView(textButton(name) {
+                        count?.setText(v.first.toString())
+                        hold?.setText(v.second.toString())
+                    })
+                }
+                b.addView(presets, lp(2))
+                count = field(b, "Number of clicks (1 to 99)", s.clicks.toString())
+                gap = field(b, "Gap between clicks (ms)", s.clickGapMs.toString())
+                hold = field(b, "Hold each click for (ms, 0 = quick tap)", s.holdMs.toString())
+                b.addView(checkBox("Two fingers at once", two) { two = it }, lp(8))
+            },
+            {
+                edit(ref) {
+                    it.copy(
+                        clicks = (count?.text.toString().toIntOrNull() ?: 1).coerceIn(1, 99),
+                        clickGapMs = (gap?.text.toString().toLongOrNull() ?: 90L).coerceIn(20L, 10_000L),
+                        holdMs = (hold?.text.toString().toLongOrNull() ?: 0L).coerceIn(0L, 59_000L),
+                        twoFingers = two,
+                    )
+                }
+            },
+        )
+    }
+
+    // ---------------------------------------------------------------- hold until a picture appears or disappears
+
+    /** "Hold Until...": choose appear or disappear and a picture; or, if one is set, edit it. */
+    private fun holdUntilEntry(ref: Ref) {
+        val s = stepAt(ref) ?: return
+        if (s.holdUntil != null) {
+            openHoldMenu(ref)
+            return
         }
+        showMenu(
+            "Hold until",
+            listOf(
+                Row("Picture appears", icon = Icon.PICTURE) { closeMenu(); addHoldUntil(ref, true) },
+                Row("Picture disappears", icon = Icon.PICTURE) { closeMenu(); addHoldUntil(ref, false) },
+            ),
+        )
+    }
+
+    private fun addHoldUntil(ref: Ref, appear: Boolean) {
+        newOrExist { box, id, fw, fh ->
+            val c = Condition(
+                kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = true,
+                label = "Hold ${ref.index + 1}",
+                boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
+            )
+            edit(ref) { it.copy(holdUntil = c, clicks = 1) }
+            refreshPanel()
+        }
+    }
+
+    private fun openHoldMenu(ref: Ref) {
+        val s = stepAt(ref) ?: return
+        val h = s.holdUntil ?: return
+        fun upd(f: (Condition) -> Condition) = edit(ref) { st -> st.copy(holdUntil = st.holdUntil?.let(f)) }
+        showMenu(
+            "Hold until",
+            listOf(
+                Row("Change Image", icon = Icon.PENCIL) {
+                    closeMenu()
+                    val start = if (h.boxW > 0) Rect(h.boxX, h.boxY, h.boxX + h.boxW, h.boxY + h.boxH) else null
+                    startCapture(start) { box, id, fw, fh ->
+                        upd { it.copy(templateId = id, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
+                        refreshPanel()
+                    }
+                },
+                Row(if (h.mustAppear) "Change to: until it disappears" else "Change to: until it appears", icon = Icon.REDO) {
+                    closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
+                },
+                Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(h.threshold) { v -> upd { it.copy(threshold = v) } } },
+                Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(h.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } },
+                Row("Edit Longest Hold", icon = Icon.PENCIL) {
+                    var secs: EditText? = null
+                    showForm("Longest Hold", "If the picture has not ${if (h.mustAppear) "appeared" else "disappeared"} by then, the press is let go and the step counts as FALSE (its If false steps and links run).", { b ->
+                        secs = field(b, "Seconds (1 to 55)", (s.holdMaxMs / 1000).toString())
+                    }, { edit(ref) { it.copy(holdMaxMs = (secs?.text.toString().toLongOrNull() ?: 10L).coerceIn(1L, 55L) * 1000) } })
+                },
+                Row("Test Condition", TokenInts.success, Icon.PLAY) {
+                    closeMenu()
+                    testMatch(h.templateId, h.boxX, h.boxY, h.boxW, h.boxH, h.capW, h.threshold, h.wholeScreen, h.mustAppear, h.label)
+                },
+                Row("Remove Hold Until", TokenInts.danger, Icon.CLOSE) {
+                    closeMenu(); edit(ref) { it.copy(holdUntil = null) }; refreshPanel()
+                },
+            ),
+        )
     }
 
     private fun editWaitDialog(ref: Ref) {
@@ -1369,7 +1489,7 @@ class EditorOverlay(
         newOrExist { box, id, fw, fh ->
             val n = (stepAt(ref)?.conditions?.size ?: 0)
             val c = Condition(
-                kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear,
+                kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = true,
                 label = "Condition ${ref.index + 1}${('a' + n)}",
                 boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
             )

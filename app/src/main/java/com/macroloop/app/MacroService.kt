@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -49,6 +50,8 @@ class MacroService : AccessibilityService() {
         const val PREF_SHOW_DETECT = "show_detect"
         const val PREF_HIGHLIGHT = "highlight_success"
         private const val DEFAULT_HOLD_MS = 60L
+        private const val HOLD_SEGMENT_MS = 350L
+        private const val FINGER_GAP_PX = 170
         private const val START_SETTLE_MS = 350L
     }
 
@@ -151,7 +154,7 @@ class MacroService : AccessibilityService() {
 
     /** True if the steps look at the screen (a picture step or a picture condition). */
     fun needsCapture(list: List<Step>): Boolean = allSteps(list).any { s ->
-        s.type == StepType.CLICK_IMAGE || s.conditions.any { it.kind == ConditionKind.IMAGE }
+        s.type == StepType.CLICK_IMAGE || s.holdUntil != null || s.conditions.any { it.kind == ConditionKind.IMAGE }
     }
 
     /** Checks the whole macro before it starts, so a setup problem is said at once and not after a long wait. */
@@ -168,6 +171,10 @@ class MacroService : AccessibilityService() {
                 if (s.enabled && c.kind == ConditionKind.IMAGE && TemplateStore.load(c.templateId) == null) {
                     return "A condition has no picture yet. Edit the macro and capture it."
                 }
+            }
+            val hold = s.holdUntil
+            if (s.enabled && hold != null && TemplateStore.load(hold.templateId) == null) {
+                return "A hold-until has no picture yet. Edit the macro and capture it."
             }
         }
         return null
@@ -288,13 +295,55 @@ class MacroService : AccessibilityService() {
             if (!human) ms else (ms * Random.nextDouble(0.95, 1.10)).toLong() + Random.nextLong(0, 80)
 
         private suspend fun clickAt(step: Step, x: Int, y: Int, where: String): Outcome {
+            if (step.holdUntil != null) return holdUntilTap(step, x, y, where)
             for (n in 1..step.clicks) {
-                if (!tap(x, y, human, step.holdMs, step.randomizePx)) {
+                if (!tapOnce(x, y, step, human)) {
                     return Outcome.Fatal("Stopped: the tap in step $where was cancelled by Android.")
                 }
-                if (n < step.clicks) delay(if (human) Random.nextLong(70, 150) else 90)
+                if (n < step.clicks) {
+                    val gap = step.clickGapMs.coerceAtLeast(20)
+                    delay(if (human) (gap * Random.nextDouble(0.85, 1.2)).toLong() else gap)
+                }
             }
             return Outcome.Ok
+        }
+
+        /**
+         * Presses and holds, looks at the screen while holding, and lets go as soon as the picture appears
+         * (or disappears). If it never does within the longest hold, lets go and the step counts as FALSE.
+         * Android lets a press be carried on by sending the next piece of it right after the last one.
+         */
+        private suspend fun holdUntilTap(step: Step, x: Int, y: Int, where: String): Outcome {
+            val until = step.holdUntil ?: return Outcome.Ok
+            val spread = maxOf(step.randomizePx, if (human) 3 else 0)
+            val paths = fingerXs(x, step.twoFingers).map { px ->
+                Path().apply { moveTo((px + jitter(spread)).coerceAtLeast(0).toFloat(), (y + jitter(spread)).coerceAtLeast(0).toFloat()) }
+            }
+            var strokes = paths.map { GestureDescription.StrokeDescription(it, 0, HOLD_SEGMENT_MS, true) }
+            if (!dispatchAll(strokes)) return Outcome.Fatal("Stopped: the hold in step $where was cancelled by Android.")
+            val started = SystemClock.elapsedRealtime()
+            while (true) {
+                val next = strokes.mapIndexed { i, st -> st.continueStroke(paths[i], 0, HOLD_SEGMENT_MS, true) }
+                var holds = false
+                // Look at the screen while the next piece of the press is going, so there is no gap.
+                val sent = kotlinx.coroutines.coroutineScope {
+                    val look = async { imageHolds(until).holds }
+                    val ok = dispatchAll(next)
+                    holds = look.await()
+                    ok
+                }
+                if (!sent) return Outcome.Fatal("Stopped: the hold in step $where was cancelled by Android.")
+                strokes = next
+                val over = SystemClock.elapsedRealtime() - started >= step.holdMaxMs
+                if (holds || over) {
+                    val last = strokes.mapIndexed { i, st -> st.continueStroke(paths[i], 0, 40, false) }
+                    dispatchAll(last)
+                    return if (holds) Outcome.Ok else Outcome.Missing(
+                        "Stopped: held for ${step.holdMaxMs / 1000} s in step $where, but \"${until.label.ifBlank { "the picture" }}\" " +
+                            "never ${if (until.mustAppear) "appeared" else "disappeared"}.",
+                    )
+                }
+            }
         }
 
         private fun global(action: Int, what: String, where: String): Outcome =
@@ -411,17 +460,23 @@ class MacroService : AccessibilityService() {
 
     private fun jitter(range: Int): Int = if (range > 0) Random.nextInt(-range, range + 1) else 0
 
-    private suspend fun tap(x: Int, y: Int, human: Boolean, holdMs: Long, randomizePx: Int): Boolean {
-        val spread = maxOf(randomizePx, if (human) 3 else 0)
-        val px = (x + jitter(spread)).coerceAtLeast(0)
-        val py = (y + jitter(spread)).coerceAtLeast(0)
+    /** The x of each finger: one in the middle, or two a little apart. */
+    private fun fingerXs(x: Int, two: Boolean): List<Int> =
+        if (two) listOf((x - FINGER_GAP_PX / 2).coerceAtLeast(0), x + FINGER_GAP_PX / 2) else listOf(x)
+
+    /** One tap, with the step's hold time, random offset and fingers. */
+    private suspend fun tapOnce(x: Int, y: Int, step: Step, human: Boolean): Boolean {
+        val spread = maxOf(step.randomizePx, if (human) 3 else 0)
         val hold = when {
-            holdMs > 0 -> holdMs
+            step.holdMs > 0 -> if (human) (step.holdMs * Random.nextDouble(0.95, 1.08)).toLong() else step.holdMs
             human -> Random.nextLong(50, 95)
             else -> DEFAULT_HOLD_MS
+        }.coerceIn(20L, 59_000L)
+        val strokes = fingerXs(x, step.twoFingers).map { px ->
+            val path = Path().apply { moveTo((px + jitter(spread)).coerceAtLeast(0).toFloat(), (y + jitter(spread)).coerceAtLeast(0).toFloat()) }
+            GestureDescription.StrokeDescription(path, 0, hold)
         }
-        val path = Path().apply { moveTo(px.toFloat(), py.toFloat()) }
-        return dispatch(GestureDescription.StrokeDescription(path, 0, hold))
+        return dispatchAll(strokes)
     }
 
     private suspend fun swipe(step: Step, human: Boolean): Boolean {
@@ -431,14 +486,16 @@ class MacroService : AccessibilityService() {
             lineTo((step.x2 + jitter(spread)).coerceAtLeast(0).toFloat(), (step.y2 + jitter(spread)).coerceAtLeast(0).toFloat())
         }
         val duration = if (human) (step.swipeMs * Random.nextDouble(0.9, 1.15)).toLong() else step.swipeMs
-        return dispatch(GestureDescription.StrokeDescription(path, 0, duration.coerceAtLeast(50)))
+        return dispatchAll(listOf(GestureDescription.StrokeDescription(path, 0, duration.coerceAtLeast(50))))
     }
 
-    private suspend fun dispatch(stroke: GestureDescription.StrokeDescription): Boolean =
+    /** Sends one or more strokes at the same time (one finger or two) and waits until they finish. */
+    private suspend fun dispatchAll(strokes: List<GestureDescription.StrokeDescription>): Boolean =
         suspendCancellableCoroutine { cont ->
-            val gesture = GestureDescription.Builder().addStroke(stroke).build()
+            val builder = GestureDescription.Builder()
+            strokes.forEach { builder.addStroke(it) }
             val accepted = dispatchGesture(
-                gesture,
+                builder.build(),
                 object : GestureResultCallback() {
                     override fun onCompleted(g: GestureDescription?) {
                         if (cont.isActive) cont.resume(true)
