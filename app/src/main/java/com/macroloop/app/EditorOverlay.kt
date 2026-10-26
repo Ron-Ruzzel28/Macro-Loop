@@ -47,6 +47,12 @@ class EditorOverlay(
     private var backButton: ToolButton? = null
     private var dirty = false
     private var markersShown = true
+    private var focusStep: Int? = null       // only this step's markers are shown while adding or capturing
+    private var showAllMarkers = true
+    private var lastAddedIndex = -1
+    private var eyeBtn: IconBtn? = null
+    private var tbX = Ui.dp(ctx, 8)
+    private var tbY = -1
 
     private val bounds = wm.currentWindowMetrics.bounds
     private val screenW = bounds.width()
@@ -93,59 +99,67 @@ class EditorOverlay(
     // ================================================================ toolbar
 
     private fun addToolbar() {
-        val root = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            background = Ui.rounded(0xF01A1D24.toInt(), dp(16).toFloat())
-        }
-        fun weight() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-            setMargins(dp(3), dp(3), dp(3), dp(3))
-        }
-
-        val row1 = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        row1.addView(ToolButton(ctx, Icon.TAP, "Tap") { addTap() }, weight())
-        row1.addView(ToolButton(ctx, Icon.SWIPE, "Swipe") { addSwipe() }, weight())
-        row1.addView(ToolButton(ctx, Icon.PICTURE, "Picture") { addPicture() }, weight())
-        row1.addView(ToolButton(ctx, Icon.PLAY, "Test run", TokenInts.success) { testRun() }, weight())
-        val eye = ToolButton(ctx, Icon.EYE, "Markers") { toggleMarkers() }
-        eyeButton = eye
-        row1.addView(eye, weight())
-        root.addView(row1)
-
-        val row2 = LinearLayout(ctx).apply {
+        val bar = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = Ui.rounded(0xF2151820.toInt(), dp(16).toFloat())
         }
+        fun btn() = LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4) }
+        bar.addView(IconBtn(ctx, Icon.SHRINK) { minimizePanel() }, LinearLayout.LayoutParams(dp(44), dp(44)))
         val info = TextView(ctx).apply {
-            textSize = 14f
+            textSize = 12f
             setTextColor(TokenInts.text)
             maxLines = 2
-            setPadding(dp(8), 0, dp(4), 0)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = dp(92)
+            setPadding(dp(8), 0, dp(6), 0)
         }
         infoText = info
-        row2.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f))
-        val back = ToolButton(ctx, Icon.BACK, "Back") { exitBranch() }
-        back.visibility = View.GONE
-        backButton = back
-        row2.addView(back, weight())
-        row2.addView(ToolButton(ctx, Icon.LIST, "List") { enterListMode() }, weight())
-        row2.addView(ToolButton(ctx, Icon.SAVE, "Save") { save(); toast("Saved") }, weight())
-        row2.addView(ToolButton(ctx, Icon.CLOSE, "Close", TokenInts.danger) { requestClose() }, weight())
-        root.addView(row2)
+        bar.addView(info, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val eye = IconBtn(ctx, Icon.EYE) { toggleShowAll() }
+        eyeBtn = eye
+        bar.addView(eye, btn())
+        bar.addView(IconBtn(ctx, Icon.PLAY, TokenInts.success) {
+            val f = focusStep
+            if (f != null) runTest(1, currentPath(), f) else runTest(0, emptyList(), 0)
+        }, btn())
+        bar.addView(IconBtn(ctx, Icon.LIST) { enterListMode() }, btn())
+        bar.addView(IconBtn(ctx, Icon.MORE) { openMarkerMenu() }, btn())
         updateInfo()
 
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.TOP
-            y = dp(26)
+            gravity = Gravity.TOP or Gravity.START
+            x = tbX
+            // The bar starts near the bottom so the top of the screen is free for your boxes.
+            y = if (tbY < 0) screenH - dp(200) else tbY
         }
-        wm.addView(root, params)
-        toolbar = root
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        info.setOnTouchListener { _, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = e.rawX; downY = e.rawY; startX = params.x; startY = params.y
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    params.x = startX + (e.rawX - downX).toInt()
+                    params.y = startY + (e.rawY - downY).toInt()
+                    tbX = params.x; tbY = params.y
+                    wm.updateViewLayout(bar, params)
+                }
+            }
+            true
+        }
+        wm.addView(bar, params)
+        toolbar = bar
     }
 
     private fun updateInfo() {
@@ -157,8 +171,9 @@ class EditorOverlay(
             }
             sb.toString()
         }
-        infoText?.text = "$where\n${if (n == 1) "1 step" else "$n steps"}${if (dirty) " (not saved)" else ""}"
-        backButton?.visibility = if (stack.isEmpty()) View.GONE else View.VISIBLE
+        val f = focusStep
+        infoText?.text = if (f != null) "$where\nstep ${f + 1}${if (dirty) " *" else ""}"
+        else "$where\n${if (n == 1) "1 step" else "$n steps"}${if (dirty) " *" else ""}"
     }
 
     /** The whole macro with every open branch written back in. */
@@ -248,7 +263,13 @@ class EditorOverlay(
 
     private fun addStep(st: Step) {
         val at = insertAt
-        if (at != null && at in 0..steps.size) steps.add(at, st) else steps.add(st)
+        if (at != null && at in 0..steps.size) {
+            steps.add(at, st)
+            lastAddedIndex = at
+        } else {
+            steps.add(st)
+            lastAddedIndex = steps.lastIndex
+        }
         insertAt = null
     }
 
@@ -282,17 +303,28 @@ class EditorOverlay(
         linesView = v
     }
 
+    private fun shows(i: Int): Boolean {
+        val f = focusStep
+        return f == null || showAllMarkers || f == i
+    }
+
     private fun updateLines() {
-        linesView?.lines = steps.filter { it.type == StepType.SWIPE }
-            .map { floatArrayOf(it.x.toFloat(), it.y.toFloat(), it.x2.toFloat(), it.y2.toFloat()) }
+        linesView?.lines = if (listMode) emptyList() else steps.withIndex()
+            .filter { it.value.type == StepType.SWIPE && shows(it.index) }
+            .map { floatArrayOf(it.value.x.toFloat(), it.value.y.toFloat(), it.value.x2.toFloat(), it.value.y2.toFloat()) }
     }
 
     private fun letter(j: Int): String = ('a' + j).toString()
 
     private fun rebuildMarkers() {
         clearMarkers()
+        if (listMode) {
+            updateLines()
+            return
+        }
         val dot = dp(52)
         steps.forEachIndexed { i, s ->
+            if (!shows(i)) return@forEachIndexed
             val n = (i + 1).toString()
             when (s.type) {
                 StepType.CLICK -> addMarker(MarkerView.Kind.TAP, n, s.x - dot / 2, s.y - dot / 2, dot, dot, i)
@@ -301,7 +333,7 @@ class EditorOverlay(
                     addMarker(MarkerView.Kind.SWIPE_END, n, s.x2 - dot / 2, s.y2 - dot / 2, dot, dot, i)
                 }
                 StepType.CLICK_IMAGE -> addMarker(MarkerView.Kind.PICTURE, n, s.boxX, s.boxY, s.boxW, s.boxH, i)
-                StepType.WAIT, StepType.STOP_MACRO -> Unit
+                StepType.WAIT, StepType.STOP_MACRO, StepType.GOTO -> Unit
             }
             s.conditions.forEachIndexed { j, c ->
                 val accent = if (c.mustAppear) TokenInts.warning else TokenInts.danger
@@ -333,15 +365,32 @@ class EditorOverlay(
             x = left
             y = top
         }
-        val v = MarkerView(ctx, kind, badge, accent, wm, lp, { markerChanged(it) }, { tapped ->
-            val o = owner[tapped]
-            if (o != null) {
-                if (o.second >= 0) openConditionSheet(o.first, o.second) else openSheet(o.first)
-            }
-        })
+        val v = MarkerView(ctx, kind, badge, accent, wm, lp, { markerChanged(it) }, { tapped -> markerTapped(tapped) })
         wm.addView(v, lp)
         markers.add(v)
         owner[v] = stepIndex to condIndex
+    }
+
+    /** A tap on a box: capture it if it has no picture yet, otherwise open the step's menu. */
+    private fun markerTapped(v: MarkerView) {
+        val (i, j) = owner[v] ?: return
+        if (i !in steps.indices) return
+        val path = currentPath()
+        if (j >= 0) {
+            if (j !in steps[i].conditions.indices) return
+            if (steps[i].conditions[j].templateId.isEmpty()) {
+                captureConditionTemplate(i, j) { toast("Picture captured. Tap the box again for more.") }
+            } else {
+                openConditionMenu(path, i, j)
+            }
+        } else {
+            val s = steps[i]
+            if (s.type == StepType.CLICK_IMAGE && s.templateId.isEmpty()) {
+                captureTemplate(i) { toast("Picture captured. Tap the box again for more.") }
+            } else {
+                openCardMenu(path, i)
+            }
+        }
     }
 
     private fun markerChanged(v: MarkerView) {
@@ -365,16 +414,24 @@ class EditorOverlay(
         updateInfo()
     }
 
-    private fun toggleMarkers() {
-        markersShown = !markersShown
-        eyeButton?.setIcon(if (markersShown) Icon.EYE else Icon.EYE_OFF, if (markersShown) "Markers" else "Hidden")
-        applyVisibility(true)
+    private fun toggleShowAll() {
+        showAllMarkers = !showAllMarkers
+        if (focusStep == null) {
+            toast("Showing every step.")
+            return
+        }
+        eyeBtn?.iconView?.let {
+            it.icon = if (showAllMarkers) Icon.EYE else Icon.EYE_OFF
+            it.invalidate()
+        }
+        toast(if (showAllMarkers) "Showing every step." else "Showing only the step you are editing.")
+        rebuildMarkers()
     }
 
     /** Shows or hides every editor window. The list and the markers are two modes of the same editor. */
     private fun applyVisibility(visible: Boolean) {
         val v = if (visible) View.VISIBLE else View.INVISIBLE
-        val toolbarOn = visible && !listMode
+        val toolbarOn = visible && !listMode && !minimized
         val panelOn = visible && listMode
         toolbar?.visibility = if (toolbarOn) View.VISIBLE else View.INVISIBLE
         setTouchable(toolbar, toolbarOn)
@@ -384,7 +441,8 @@ class EditorOverlay(
         setTouchable(mini, visible && minimized)
         sheet?.visibility = v
         dialog?.visibility = v
-        val mv = if (toolbarOn && markersShown) View.VISIBLE else View.INVISIBLE
+        // Boxes stay visible while the bar is shrunk, so you can still place them.
+        val mv = if (visible && !listMode) View.VISIBLE else View.INVISIBLE
         markers.forEach { it.visibility = mv }
         linesView?.visibility = mv
     }
@@ -447,6 +505,7 @@ class EditorOverlay(
             StepType.CLICK_IMAGE -> "Step ${index + 1}: Find a picture"
             StepType.WAIT -> "Step ${index + 1}: Wait"
             StepType.STOP_MACRO -> "Step ${index + 1}: Stop the macro"
+            StepType.GOTO -> "Step ${index + 1}: Go to a step"
         }
         header.addView(label(title, 20f, TokenInts.text), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         header.addView(Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) { closeSheet() })
@@ -532,6 +591,9 @@ class EditorOverlay(
             StepType.STOP_MACRO -> {
                 body.addView(label("When the macro gets here, it stops.", 16f, TokenInts.text), lp(8))
             }
+            StepType.GOTO -> {
+                body.addView(label("When the macro gets here, it jumps to another step.", 16f, TokenInts.text), lp(8))
+            }
             StepType.WAIT -> {
                 body.addView(
                     stepper("Wait", { "${steps[i].ms / 1000.0} s" },
@@ -545,7 +607,7 @@ class EditorOverlay(
 
     private fun buildGeneral(body: LinearLayout, i: Int) {
         buildGeneralBase(body, i)
-        if (steps[i].type != StepType.WAIT && steps[i].type != StepType.STOP_MACRO) {
+        if (steps[i].type != StepType.WAIT && steps[i].type != StepType.STOP_MACRO && steps[i].type != StepType.GOTO) {
             buildConditions(body, i)
             buildBranches(body, i)
         }
@@ -1089,26 +1151,52 @@ class EditorOverlay(
 
     // ================================================================ test run, save, close
 
-    private fun testRun() {
-        if (snapshotRoot().isEmpty()) {
+    private fun hasPictures(list: List<Step>) = flat(list).any { it.type == StepType.CLICK_IMAGE || it.conditions.isNotEmpty() }
+
+    private fun missingPicture(list: List<Step>) =
+        flat(list).any { (it.type == StepType.CLICK_IMAGE && it.templateId.isEmpty()) || it.conditions.any { c -> c.templateId.isEmpty() } }
+
+    /**
+     * Runs a test straight away.
+     * kind 0 = the whole macro, 1 = only this step (no branches), 2 = this step and everything after it in its list.
+     */
+    private fun runTest(kind: Int, path: List<Pair<Int, Boolean>>, i: Int) {
+        closeDialog()
+        closeSheet()
+        if (kind != 0) goTo(path)
+        val whole = snapshotRoot()
+        if (whole.isEmpty()) {
             toast("Add a step first.")
             return
         }
-        if (flat(snapshotRoot()).any { st -> (st.type == StepType.CLICK_IMAGE && st.templateId.isEmpty()) || st.conditions.any { it.templateId.isEmpty() } }) {
+        if (kind != 0 && i !in steps.indices) return
+        val slice: List<Step> = when (kind) {
+            1 -> listOf(steps[i])
+            2 -> steps.drop(i)
+            else -> whole
+        }
+        val needsAll = kind == 0 || flat(slice).any { it.type == StepType.GOTO }
+        val check = if (needsAll) whole else slice
+        if (missingPicture(check)) {
             toast("A picture or condition has no picture yet. Tap its box to capture it.")
             return
         }
-        if (!CaptureService.running && flat(snapshotRoot()).any { it.type == StepType.CLICK_IMAGE || it.conditions.isNotEmpty() }) {
+        if (!CaptureService.running && hasPictures(check)) {
             showCaptureNeeded()
             return
         }
         val svc = MacroService.instance ?: return
-        closeSheet()
+        val macro = Macro(macroId, macroName, whole, repeat = 1)
         applyVisibility(false)
-        svc.runMacro(Macro(macroId, macroName, snapshotRoot(), repeat = 1), 2) {
-            applyVisibility(true)
+        val done = { applyVisibility(true) }
+        when (kind) {
+            1 -> svc.testStep(macro, steps[i], done)
+            2 -> svc.testFrom(macro, steps.toList(), i, done)
+            else -> svc.runMacro(macro, done)
         }
     }
+
+    private fun testRun() = runTest(0, emptyList(), 0)
 
     private fun save() {
         MacroRepository.save(Macro(id = macroId, name = macroName, steps = snapshotRoot(), repeat = repeat))
@@ -1165,8 +1253,12 @@ class EditorOverlay(
         closeDialog()
         removeMatchBox()
         listMode = true
+        focusStep = null
+        showAllMarkers = true
         removeMini()
+        rebuildMarkers()
         refreshPanel()
+        applyVisibility(true)
     }
 
     /** Shrinks the list into a small round button so you can see and use the real screen. */
@@ -1220,7 +1312,8 @@ class EditorOverlay(
                 android.view.MotionEvent.ACTION_UP -> if (!moved) {
                     minimized = false
                     removeMini()
-                    refreshPanel()
+                    if (listMode) refreshPanel()
+                    applyVisibility(true)
                 }
             }
             true
@@ -1236,22 +1329,45 @@ class EditorOverlay(
         mini = null
     }
 
+    private fun openMarkerMenu() {
+        val f = focusStep
+        val rows = ArrayList<Row>()
+        rows.add(Row("Back to the list") { closeDialog(); enterListMode() })
+        if (f != null) {
+            rows.add(Row(if (showAllMarkers) "Show only the step I am editing" else "Show every step") { closeDialog(); toggleShowAll() })
+            rows.add(Row("Test this step") { runTest(1, currentPath(), f) })
+        }
+        rows.add(Row("Test the whole macro") { runTest(0, emptyList(), 0) })
+        rows.add(Row("Save") { closeDialog(); save(); toast("Saved") })
+        rows.add(Row("Close the editor", TokenInts.danger) { closeDialog(); requestClose() })
+        showBigMenu(macroName, rows)
+    }
+
     private fun openPanelMenu() {
         showBigMenu(
             macroName,
             listOf(
-                Row("Place on screen (markers)") { enterMarkerMode("Drag the markers. Tap List to come back.") },
+                Row("Place on screen (every step)") { enterMarkerMode("Drag the markers. Tap the list icon to come back.") },
                 Row("Save") { closeDialog(); save(); refreshPanel(); toast("Saved") },
                 Row("Close the editor", TokenInts.danger) { closeDialog(); requestClose() },
             ),
         )
     }
 
-    private fun enterMarkerMode(msg: String?) {
+    private fun enterMarkerMode(msg: String?, focus: Int? = null) {
         closeSheet()
         closeDialog()
         removeMini()
+        panel?.let { runCatching { wm.removeView(it) } }
+        panel = null
+        panelScroll = null
         listMode = false
+        focusStep = focus
+        showAllMarkers = focus == null
+        eyeBtn?.iconView?.let {
+            it.icon = if (showAllMarkers) Icon.EYE else Icon.EYE_OFF
+            it.invalidate()
+        }
         rebuildMarkers()
         applyVisibility(true)
         updateInfo()
@@ -1344,9 +1460,12 @@ class EditorOverlay(
     }
 
     private fun renderSteps(box: LinearLayout, list: List<Step>, path: List<Pair<Int, Boolean>>, depth: Int, prefix: String) {
+        val cards = ArrayList<View>()
         list.forEachIndexed { i, s ->
             val num = if (prefix.isEmpty()) "${i + 1}" else "$prefix.${i + 1}"
-            box.addView(buildCard(s, path, i, num), lp(6))
+            val card = buildCard(s, path, i, num, cards)
+            cards.add(card)
+            box.addView(card, lp(6))
             if (s.onSuccess.isNotEmpty()) addBranch(box, s.onSuccess, path + (i to true), depth, num, true)
             if (s.onFail.isNotEmpty()) addBranch(box, s.onFail, path + (i to false), depth, num, false)
         }
@@ -1379,16 +1498,29 @@ class EditorOverlay(
         box.addView(group, lpGroup)
     }
 
-    private fun headline(s: Step): String = when (s.type) {
+    private fun describeStep(s: Step): String = when (s.type) {
         StepType.CLICK -> "Tap  (${s.x}, ${s.y})"
         StepType.SWIPE -> "Swipe  (${s.x}, ${s.y}) to (${s.x2}, ${s.y2})"
         StepType.WAIT -> "Wait  ${s.ms / 1000.0} s"
         StepType.CLICK_IMAGE -> "Tap the picture  \"${s.label}\""
         StepType.STOP_MACRO -> "Stop the macro"
+        StepType.GOTO -> {
+            val whole = snapshotRoot()
+            val k = whole.indexOfFirst { it.id == s.targetId }
+            when {
+                s.targetId.isEmpty() -> "Go to a step  (pick one)"
+                k < 0 -> "Go to a step that was deleted"
+                else -> "Go to step ${k + 1}  ${whole[k].name.ifBlank { whole[k].describe() }}"
+            }
+        }
     }
+
+    /** The user's own name for the step if it has one, otherwise a description. */
+    private fun headline(s: Step): String = if (s.name.isNotBlank()) s.name else describeStep(s)
 
     private fun subline(s: Step): String {
         val parts = ArrayList<String>()
+        if (s.name.isNotBlank()) parts.add(describeStep(s))
         if (s.type == StepType.CLICK || s.type == StepType.SWIPE || s.type == StepType.CLICK_IMAGE) {
             parts.add("x${s.repeatCount}")
             parts.add("delay ${s.delayMs} / ${s.waitNextMs} ms")
@@ -1432,7 +1564,7 @@ class EditorOverlay(
         return row
     }
 
-    private fun buildCard(s: Step, path: List<Pair<Int, Boolean>>, i: Int, num: String): View {
+    private fun buildCard(s: Step, path: List<Pair<Int, Boolean>>, i: Int, num: String, cards: List<View>): View {
         val card = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(10), dp(8), dp(8), dp(8))
@@ -1451,6 +1583,7 @@ class EditorOverlay(
             StepType.WAIT -> "⏱"
             StepType.CLICK_IMAGE -> "▣"
             StepType.STOP_MACRO -> "■"
+            StepType.GOTO -> "→"
         }
         top.addView(circle(glyph, TokenInts.primary, TokenInts.onPrimary, 36), LinearLayout.LayoutParams(dp(36), dp(36)))
         val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
@@ -1466,6 +1599,16 @@ class EditorOverlay(
             },
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) },
         )
+        // Drag handle: hold it and slide the card up or down to change its order.
+        val handle = TextView(ctx).apply {
+            text = "≡"
+            textSize = 24f
+            setTextColor(TokenInts.textMuted)
+            gravity = Gravity.CENTER
+            contentDescription = "Drag to reorder"
+        }
+        top.addView(handle, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginStart = dp(4) })
+        attachDrag(handle, card, cards, path, i)
         card.addView(top)
 
         // the logic tree: this step's own picture, then the extra conditions
@@ -1502,6 +1645,45 @@ class EditorOverlay(
         }
         if (hasTree) card.addView(tree)
         return card
+    }
+
+    private fun attachDrag(handle: View, card: View, cards: List<View>, path: List<Pair<Int, Boolean>>, i: Int) {
+        var startRaw = 0f
+        handle.setOnTouchListener { v, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    startRaw = e.rawY
+                    card.translationZ = dp(8).toFloat()
+                    card.alpha = 0.85f
+                }
+                android.view.MotionEvent.ACTION_MOVE -> card.translationY = e.rawY - startRaw
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    val loc = IntArray(2)
+                    card.getLocationOnScreen(loc)
+                    val center = loc[1] + card.height / 2
+                    var newIndex = 0
+                    for (c in cards) {
+                        if (c === card) continue
+                        val l = IntArray(2)
+                        c.getLocationOnScreen(l)
+                        if (l[1] + c.height / 2 < center) newIndex++
+                    }
+                    card.translationY = 0f
+                    card.translationZ = 0f
+                    card.alpha = 1f
+                    if (e.action == android.view.MotionEvent.ACTION_UP && newIndex != i) {
+                        goTo(path)
+                        if (i in steps.indices) {
+                            val moved = steps.removeAt(i)
+                            steps.add(newIndex.coerceIn(0, steps.size), moved)
+                            listChanged()
+                        }
+                    }
+                }
+            }
+            true
+        }
     }
 
     // ---------------------------------------------------------------- big menus
@@ -1581,8 +1763,8 @@ class EditorOverlay(
             "Add a step",
             listOf(
                 Row("Gestures"),
-                Row("Tap a spot") { go { addTap(); enterMarkerMode("Drag the dot to the spot. Tap List to come back.") } },
-                Row("Swipe") { go { addSwipe(); enterMarkerMode("Drag both dots. Tap List to come back.") } },
+                Row("Tap a spot") { go { addTap(); enterMarkerMode("Drag the dot to the spot.", lastAddedIndex) } },
+                Row("Swipe") { go { addSwipe(); enterMarkerMode("Drag both dots.", lastAddedIndex) } },
                 Row("Picture"),
                 Row("Find and tap a picture") {
                     go {
@@ -1591,8 +1773,18 @@ class EditorOverlay(
                             showCaptureNeeded()
                         } else {
                             addPicture()
-                            enterMarkerMode("Move the box over the picture, tap it to capture. Tap List to come back.")
+                            enterMarkerMode("Move the box over the picture, then tap the box to capture it.", lastAddedIndex)
                         }
+                    }
+                },
+                Row("Link"),
+                Row("Go to another step") {
+                    closeDialog()
+                    openLinkPicker { t ->
+                        goTo(target)
+                        insertAt = insertIndex
+                        addStep(Step(StepType.GOTO, targetId = t.id))
+                        listChanged()
                     }
                 },
                 Row("Macro"),
@@ -1602,20 +1794,69 @@ class EditorOverlay(
         )
     }
 
+    /** Lists the steps of the main list so one can be chosen as the target of a Go to link. */
+    private fun openLinkPicker(onPick: (Step) -> Unit) {
+        val whole = snapshotRoot()
+        val rows = ArrayList<Row>()
+        rows.add(Row("Pick the step the macro should jump to"))
+        whole.forEachIndexed { k, st ->
+            rows.add(Row("${k + 1}.  ${st.name.ifBlank { st.describe() }}") { closeDialog(); onPick(st) })
+        }
+        showBigMenu("Go to a step", rows)
+    }
+
+    private fun renumberIds(s: Step): Step = s.copy(
+        id = java.util.UUID.randomUUID().toString(),
+        onSuccess = s.onSuccess.map { renumberIds(it) },
+        onFail = s.onFail.map { renumberIds(it) },
+    )
+
     private fun openCardMenu(path: List<Pair<Int, Boolean>>, i: Int) {
         goTo(path)
         if (i !in steps.indices) return
         val s = steps[i]
         val rows = ArrayList<Row>()
         val movable = s.type == StepType.CLICK || s.type == StepType.SWIPE || s.type == StepType.CLICK_IMAGE
-        val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO
+        val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO && s.type != StepType.GOTO
 
-        if (movable) rows.add(Row("Move on screen") { enterMarkerMode("Drag it. Tap List to come back.") })
-        if (s.type == StepType.CLICK_IMAGE) {
-            rows.add(Row("Change picture") { enterMarkerMode("Move the box over the new picture, tap it, then Capture again.") })
-            rows.add(Row("Edit picture settings") { editPictureDialog(i) })
-            rows.add(Row("Test now") { closeDialog(); testPicture(i) })
+        if (movable) {
+            rows.add(
+                Row(if (listMode) "Place on screen" else "Move on screen") {
+                    enterMarkerMode("Drag it to where you want it.", i)
+                },
+            )
         }
+        if (s.type == StepType.CLICK_IMAGE) {
+            if (listMode) {
+                rows.add(Row("Change picture") { enterMarkerMode("Move the box over the new picture, then tap the box.", i) })
+            } else {
+                rows.add(Row("Capture the picture in the box") {
+                    closeDialog()
+                    captureTemplate(i) { toast("Picture captured.") }
+                })
+            }
+            rows.add(Row("Edit picture settings") { editPictureDialog(i) })
+            rows.add(Row("Test the picture now") { closeDialog(); testPicture(i) })
+        }
+        if (s.type == StepType.GOTO) {
+            rows.add(Row("Change where it goes") {
+                closeDialog()
+                openLinkPicker { t ->
+                    goTo(path)
+                    edit(i) { it.copy(targetId = t.id) }
+                    listChanged()
+                }
+            })
+        }
+        rows.add(Row("Rename") {
+            showTextInput("Name this step", s.name, "For example: Open the shop") { n ->
+                goTo(path)
+                edit(i) { it.copy(name = n.trim()) }
+                listChanged()
+            }
+        })
+        rows.add(Row("Test this step", TokenInts.success) { runTest(1, path, i) })
+        rows.add(Row("Test from this step to the end", TokenInts.success) { runTest(2, path, i) })
         if (s.type == StepType.WAIT) rows.add(Row("Edit wait time") { editWaitDialog(i) })
         if (s.type == StepType.SWIPE) rows.add(Row("Edit swipe speed") { editSwipeDialog(i) })
         if (movable) {
@@ -1631,7 +1872,7 @@ class EditorOverlay(
         rows.add(Row("Add step above") { openAddPicker(path, i) })
         rows.add(Row("Move up") { closeDialog(); if (i > 0) { val t = steps[i]; steps[i] = steps[i - 1]; steps[i - 1] = t; listChanged() } })
         rows.add(Row("Move down") { closeDialog(); if (i < steps.size - 1) { val t = steps[i]; steps[i] = steps[i + 1]; steps[i + 1] = t; listChanged() } })
-        rows.add(Row("Copy") { closeDialog(); steps.add(i + 1, steps[i]); listChanged() })
+        rows.add(Row("Copy") { closeDialog(); steps.add(i + 1, renumberIds(steps[i])); listChanged() })
         rows.add(Row(if (s.enabled) "Disable" else "Enable") { closeDialog(); edit(i) { it.copy(enabled = !it.enabled) }; listChanged() })
         rows.add(Row("Delete", TokenInts.danger) { closeDialog(); steps.removeAt(i); listChanged() })
         showBigMenu(headline(s), rows)
@@ -1644,7 +1885,13 @@ class EditorOverlay(
         showBigMenu(
             "Condition ${i + 1}${letter(j)}",
             listOf(
-                Row("Move on screen / change picture") { enterMarkerMode("Move the box, tap it, then Capture again.") },
+                Row(if (listMode) "Place on screen / change picture" else "Capture the picture in the box") {
+                    if (listMode) enterMarkerMode("Move the box, then tap it.", i)
+                    else {
+                        closeDialog()
+                        captureConditionTemplate(i, j) { toast("Picture captured.") }
+                    }
+                },
                 Row("Test now") { closeDialog(); testCondition(i, j) },
                 Row(if (c.mustAppear) "Change to: must NOT be on screen" else "Change to: must be on screen") {
                     closeDialog()
@@ -1692,7 +1939,7 @@ class EditorOverlay(
             boxW = w, boxH = h, capW = screenW, capH = screenH,
         )
         edit(i) { it.copy(conditions = it.conditions + c) }
-        enterMarkerMode("Move the box over it, then tap the box to capture it. Tap List to come back.")
+        enterMarkerMode("Move the box over it, then tap the box to capture it.", i)
     }
 
     // ---------------------------------------------------------------- edit dialogs (big steppers)
@@ -1807,6 +2054,58 @@ class EditorOverlay(
     private fun closeDialog() {
         dialog?.let { runCatching { wm.removeView(it) } }
         dialog = null
+    }
+
+    /** A small window with a text box and the keyboard. */
+    private fun showTextInput(title: String, initial: String, hint: String, onDone: (String) -> Unit) {
+        closeDialog()
+        val box = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = Ui.rounded(TokenInts.surface, dp(18).toFloat())
+        }
+        box.addView(label(title, 16f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+        val input = android.widget.EditText(ctx).apply {
+            setText(initial)
+            setSelection(initial.length)
+            this.hint = hint
+            textSize = 16f
+            setTextColor(TokenInts.text)
+            setHintTextColor(TokenInts.textMuted)
+            setSingleLine(true)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            background = Ui.rounded(TokenInts.surfaceHigh, dp(10).toFloat())
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        box.addView(input, lp(10))
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(
+            Ui.button(ctx, "Cancel", TokenInts.surfaceHigh, TokenInts.text) { closeDialog() },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        row.addView(
+            Ui.button(ctx, "Save", TokenInts.primary, TokenInts.onPrimary) {
+                val text = input.text.toString()
+                closeDialog()
+                onDone(text)
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(8) },
+        )
+        box.addView(row, lp(12))
+        // No NOT_FOCUSABLE here: the window must take focus to show the keyboard.
+        val params = WindowManager.LayoutParams(
+            (screenW * 0.92).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = dp(110)
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN or WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+        }
+        wm.addView(box, params)
+        dialog = box
+        input.requestFocus()
     }
 
     private fun stepper(title: String, value: () -> String, onMinus: () -> Unit, onPlus: () -> Unit): View {

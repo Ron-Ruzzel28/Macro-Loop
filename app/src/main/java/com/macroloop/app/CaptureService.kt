@@ -46,6 +46,21 @@ class CaptureService : Service() {
         /** A private copy of the newest frame, or null if none yet. */
         fun grab(): Bitmap? = instance?.copyFrame()
 
+        /**
+         * Like [grab], but waits (up to [maxWaitMs]) for a frame taken after [sinceMs]
+         * (SystemClock.elapsedRealtime). After a tap the screen changes; without this, the first look
+         * could still see the screen from before the tap. A still screen never sends a new frame, so
+         * the wait is capped and the last frame is used.
+         */
+        suspend fun grabFresh(sinceMs: Long, maxWaitMs: Long = 300): Bitmap? {
+            val svc = instance ?: return null
+            val limit = SystemClock.elapsedRealtime() + maxWaitMs
+            while (svc.lastFrameAt < sinceMs && SystemClock.elapsedRealtime() < limit) {
+                kotlinx.coroutines.delay(20)
+            }
+            return svc.copyFrame()
+        }
+
         fun stop(context: Context) {
             context.stopService(Intent(context, CaptureService::class.java))
         }
@@ -61,6 +76,7 @@ class CaptureService : Service() {
     private var thread: HandlerThread? = null
     private val lock = Any()
     private var buffer: Bitmap? = null
+    @Volatile
     private var lastFrameAt = 0L
     private var pending: android.media.Image? = null
     private var convertScheduled = false

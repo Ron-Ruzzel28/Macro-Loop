@@ -283,10 +283,12 @@ class IconBtn(
     sizeDp: Int = 44,
     onClick: () -> Unit,
 ) : android.widget.FrameLayout(context) {
+    val iconView = IconView(context, icon, color)
+
     init {
         background = Ui.rounded(TokenInts.surfaceHigh, Ui.dp(context, sizeDp / 2).toFloat())
         isClickable = true
-        addView(IconView(context, icon, color), LayoutParams(Ui.dp(context, 22), Ui.dp(context, 22), Gravity.CENTER))
+        addView(iconView, LayoutParams(Ui.dp(context, 22), Ui.dp(context, 22), Gravity.CENTER))
         setOnClickListener { onClick() }
     }
 }

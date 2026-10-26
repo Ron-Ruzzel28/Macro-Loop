@@ -44,6 +44,8 @@ class MacroService : AccessibilityService() {
         const val PREFS = "macroloop"
         const val PREF_HUMAN = "human_timing"
         private const val DEFAULT_HOLD_MS = 60L
+        private const val MAX_JUMPS = 5000
+        private const val START_SETTLE_MS = 350L
     }
 
     private lateinit var wm: WindowManager
@@ -192,14 +194,14 @@ class MacroService : AccessibilityService() {
             return
         }
         removePlayPanel()
-        runMacro(macro, 3) {
+        runMacro(macro, onFinished = {
             // Back to the Play button when the run ends or is stopped, unless a new run started.
             // The job is still "active" while this runs, so look again a moment later.
             scope.launch {
                 delay(150)
                 if (playMacroId == id && !isRunning()) showPlayPanel(id)
             }
-        }
+        })
     }
 
     private fun closePlayPanel() {
@@ -216,24 +218,54 @@ class MacroService : AccessibilityService() {
         it.type == StepType.CLICK_IMAGE || it.conditions.isNotEmpty() || needsCapture(it.onSuccess) || needsCapture(it.onFail)
     }
 
-    /** Run the given macro now. [onFinished] is called when it ends, is stopped, or fails. */
-    fun runMacro(macro: Macro, countdownSeconds: Int, onFinished: (() -> Unit)?) {
+    /**
+     * Runs a macro right away (no countdown).
+     * @param startList the list to run first. Null means the whole macro. A Go to step can jump
+     *        to any step of the main list, and the run then carries on from there.
+     * @param rounds how many times to run it (the macro's repeat count for a full run).
+     * [onFinished] is called when it ends, is stopped, or fails.
+     */
+    fun runMacro(
+        macro: Macro,
+        onFinished: (() -> Unit)? = null,
+        startList: List<Step>? = null,
+        rounds: Int = macro.repeat,
+    ) {
         stopRun()
         showRunBar()
         runJob = scope.launch {
             val human = humanTiming()
             try {
-                for (s in countdownSeconds downTo 1) {
-                    setStatus("${macro.name}: starting in $s s")
-                    delay(1000)
-                }
-                for (round in 1..macro.repeat) {
-                    for ((i, step) in macro.steps.withIndex()) {
-                        setStatus("${macro.name}\nRound $round of ${macro.repeat}, step ${i + 1} of ${macro.steps.size}")
-                        val problem = runStep(macro.name, (i + 1).toString(), step, human)
-                        if (problem != null) {
-                            finish(problem)
-                            return@launch
+                // No countdown. A short pause lets Android finish hiding the editor or Play button,
+                // so the first tap does not land on a window that is still there.
+                setStatus("${macro.name}: starting")
+                delay(START_SETTLE_MS)
+                val root = macro.steps
+                var jumps = 0
+                for (round in 1..rounds) {
+                    var cur: List<Step> = startList ?: root
+                    var i = 0
+                    while (i < cur.size) {
+                        setStatus("${macro.name}\nRound $round of $rounds, step ${i + 1} of ${cur.size}")
+                        when (val flow = runStep(macro.name, (i + 1).toString(), cur[i], human)) {
+                            Flow.Next -> i++
+                            is Flow.Stop -> {
+                                finish(flow.message)
+                                return@launch
+                            }
+                            is Flow.Jump -> {
+                                val at = root.indexOfFirst { it.id == flow.targetId }
+                                if (at < 0) {
+                                    finish("Stopped: a Go to link points to a step that no longer exists.")
+                                    return@launch
+                                }
+                                if (++jumps > MAX_JUMPS) {
+                                    finish("Stopped: too many jumps. A Go to link may be looping with nothing to stop it.")
+                                    return@launch
+                                }
+                                cur = root
+                                i = at
+                            }
                         }
                     }
                 }
@@ -244,6 +276,17 @@ class MacroService : AccessibilityService() {
                 onFinished?.invoke()
             }
         }
+    }
+
+    /** Test one step on its own (no branches, no jumps). */
+    fun testStep(macro: Macro, step: Step, onFinished: (() -> Unit)?) {
+        val alone = step.copy(onSuccess = emptyList(), onFail = emptyList(), enabled = true)
+        runMacro(Macro(macro.id, macro.name, macro.steps, 1), onFinished, startList = listOf(alone), rounds = 1)
+    }
+
+    /** Test from one step to the end of its list, then on through any Go to link. */
+    fun testFrom(macro: Macro, list: List<Step>, index: Int, onFinished: (() -> Unit)?) {
+        runMacro(Macro(macro.id, macro.name, macro.steps, 1), onFinished, startList = list.drop(index), rounds = 1)
     }
 
     fun stopRun() {
@@ -269,28 +312,45 @@ class MacroService : AccessibilityService() {
         data class Fatal(val message: String) : Outcome()
     }
 
-    /** Runs a list of steps (a branch). Returns a message if the macro must stop. */
-    private suspend fun runList(macroName: String, list: List<Step>, human: Boolean, prefix: String): String? {
+    /** What to do after a step: go on, stop the whole macro, or jump to another step. */
+    private sealed class Flow {
+        data object Next : Flow()
+        data class Stop(val message: String) : Flow()
+        data class Jump(val targetId: String) : Flow()
+    }
+
+    /** Runs a list of steps (a branch). A Stop or a Jump ends the branch and is passed up. */
+    private suspend fun runList(macroName: String, list: List<Step>, human: Boolean, prefix: String): Flow {
         for ((i, step) in list.withIndex()) {
             val where = "$prefix #${i + 1}"
             setStatus("$macroName\nStep $where of ${list.size}")
-            val problem = runStep(macroName, where, step, human)
-            if (problem != null) return problem
+            val flow = runStep(macroName, where, step, human)
+            if (flow !is Flow.Next) return flow
         }
-        return null
+        return Flow.Next
     }
 
     /**
      * Runs one step with its delay, repeat and wait-after settings, then its branch.
-     * Returns a message if the macro must stop.
+     * The rules:
+     *  - a disabled step is skipped, with its branches;
+     *  - a picture or condition that never shows up is "false": On fail runs if it has steps,
+     *    otherwise the step is skipped if "skip" is set, otherwise the macro stops;
+     *  - a step that works is "true": On success runs after it;
+     *  - setup trouble (capture off, a missing picture file, a cancelled tap) always stops the macro.
      */
-    private suspend fun runStep(macroName: String, where: String, step: Step, human: Boolean): String? {
-        if (!step.enabled) return null
-        if (step.type == StepType.WAIT) {
-            delay(waitTime(step.ms, human))
-            return null
+    private suspend fun runStep(macroName: String, where: String, step: Step, human: Boolean): Flow {
+        if (!step.enabled) return Flow.Next
+        when (step.type) {
+            StepType.WAIT -> {
+                delay(waitTime(step.ms, human))
+                return Flow.Next
+            }
+            StepType.STOP_MACRO -> return Flow.Stop("Stopped by a Stop step ($where).")
+            StepType.GOTO -> return if (step.targetId.isEmpty()) Flow.Stop("Stopped: the Go to step $where has no target. Edit it and choose one.")
+            else Flow.Jump(step.targetId)
+            else -> Unit
         }
-        if (step.type == StepType.STOP_MACRO) return "Stopped: a Stop step ($where) ended the macro."
         if (step.delayMs > 0) delay(step.delayMs)
 
         var outcome: Outcome = Outcome.Ok
@@ -317,13 +377,13 @@ class MacroService : AccessibilityService() {
             Outcome.Ok -> {
                 val after = step.waitNextMs + if (human) Random.nextLong(50, 250) else 0L
                 if (after > 0) delay(after)
-                if (step.onSuccess.isNotEmpty()) runList(macroName, step.onSuccess, human, "$where on success") else null
+                if (step.onSuccess.isNotEmpty()) runList(macroName, step.onSuccess, human, "$where on success") else Flow.Next
             }
-            is Outcome.Fatal -> o.message
+            is Outcome.Fatal -> Flow.Stop(o.message)
             is Outcome.Missing -> when {
                 step.onFail.isNotEmpty() -> runList(macroName, step.onFail, human, "$where on fail")
-                step.skipIfMissing -> null
-                else -> o.message
+                step.skipIfMissing -> Flow.Next
+                else -> Flow.Stop(o.message)
             }
         }
     }
@@ -373,8 +433,10 @@ class MacroService : AccessibilityService() {
         try {
             val startedAt = SystemClock.elapsedRealtime()
             var why = ""
+            var first = true
             while (true) {
-                val frame = CaptureService.grab()
+                val frame = if (first) CaptureService.grabFresh(startedAt) else CaptureService.grab()
+                first = false
                 if (frame != null) {
                     val check = checkConditions(frame, step, templates)
                     if (check.ok) return Outcome.Ok
@@ -407,8 +469,10 @@ class MacroService : AccessibilityService() {
             var last: Matcher.Result? = null
             var lastCount = 0
             var steady = 0
+            var first = true
             while (true) {
-                val frame = CaptureService.grab()
+                val frame = if (first) CaptureService.grabFresh(startedAt) else CaptureService.grab()
+                first = false
                 if (frame != null) {
                     val scale = if (step.capW > 0) frame.width.toDouble() / step.capW else 1.0
                     val region = if (step.wholeScreen) null

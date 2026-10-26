@@ -3,7 +3,7 @@ package com.macroloop.app
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class StepType { CLICK, SWIPE, WAIT, CLICK_IMAGE, STOP_MACRO }
+enum class StepType { CLICK, SWIPE, WAIT, CLICK_IMAGE, STOP_MACRO, GOTO }
 
 /**
  * Something that must (or must not) be on screen before a step runs.
@@ -45,6 +45,9 @@ data class Condition(
 
 data class Step(
     val type: StepType,
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String = "",             // the user's own label, shown instead of the description
+    val targetId: String = "",         // GOTO: the id of the step to jump to
     val x: Int = 0,
     val y: Int = 0,
     val ms: Long = 0,                   // WAIT length
@@ -88,10 +91,14 @@ data class Step(
         StepType.WAIT -> "Wait ${ms / 1000.0} s"
         StepType.CLICK_IMAGE -> "Tap the picture \"$label\" (look for up to ${timeoutMs / 1000} s)"
         StepType.STOP_MACRO -> "Stop the macro"
+        StepType.GOTO -> "Go to a step"
     }
 
     fun toJson(): JSONObject = JSONObject()
         .put("type", type.name)
+        .put("id", id)
+        .put("name", name)
+        .put("targetId", targetId)
         .put("x", x).put("y", y).put("ms", ms)
         .put("x2", x2).put("y2", y2).put("swipeMs", swipeMs)
         .put("templateId", templateId)
@@ -118,6 +125,9 @@ data class Step(
     companion object {
         fun fromJson(o: JSONObject): Step = Step(
             type = StepType.valueOf(o.getString("type")),
+            id = o.optString("id", "").ifEmpty { java.util.UUID.randomUUID().toString() },
+            name = o.optString("name", ""),
+            targetId = o.optString("targetId", ""),
             x = o.optInt("x"),
             y = o.optInt("y"),
             ms = o.optLong("ms"),
