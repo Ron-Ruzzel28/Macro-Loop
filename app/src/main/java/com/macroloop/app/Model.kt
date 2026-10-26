@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 enum class StepType {
-    CLICK, SWIPE, WAIT, CLICK_IMAGE, STOP_MACRO, GOTO,
+    CLICK, SWIPE, WAIT, CLICK_IMAGE, STOP_MACRO, GOTO, LINK,
     PRESS_BACK, PRESS_HOME, OPEN_RECENT, OPEN_NOTIFICATION, OPEN_QUICKSETTING, LOCK_SCREEN,
     TOAST, OPEN_APP,
 }
@@ -104,6 +104,7 @@ data class Step(
     val onSuccess: List<Step> = emptyList(), // when the step worked
     val onFail: List<Step> = emptyList(),    // when its picture or conditions never showed up
     val enabled: Boolean = true,             // false = the step is skipped
+    val linkedOnly: Boolean = false,         // true = skipped in the normal order, runs only when a link calls it
 ) {
     /** A short plain description, used when the step has no name. */
     fun describe(): String = when (type) {
@@ -113,6 +114,7 @@ data class Step(
         StepType.CLICK_IMAGE -> "Click image"
         StepType.STOP_MACRO -> "Stop macro"
         StepType.GOTO -> "Go to step"
+        StepType.LINK -> "Run step"
         StepType.PRESS_BACK -> "Press Back"
         StepType.PRESS_HOME -> "Press Home"
         StepType.OPEN_RECENT -> "Open Recent"
@@ -153,6 +155,7 @@ data class Step(
         .put("offsetX", offsetX).put("offsetY", offsetY)
         .put("anyOf", anyOf)
         .put("enabled", enabled)
+        .put("linkedOnly", linkedOnly)
         .put("onSuccess", JSONArray().also { a -> onSuccess.forEach { a.put(it.toJson()) } })
         .put("onFail", JSONArray().also { a -> onFail.forEach { a.put(it.toJson()) } })
         .put("conditions", JSONArray().also { a -> conditions.forEach { a.put(it.toJson()) } })
@@ -191,6 +194,7 @@ data class Step(
             offsetY = o.optInt("offsetY", 0),
             anyOf = o.optBoolean("anyOf", false),
             enabled = o.optBoolean("enabled", true),
+            linkedOnly = o.optBoolean("linkedOnly", false),
             onSuccess = o.optJSONArray("onSuccess")?.let { a -> List(a.length()) { fromJson(a.getJSONObject(it)) } } ?: emptyList(),
             onFail = o.optJSONArray("onFail")?.let { a -> List(a.length()) { fromJson(a.getJSONObject(it)) } } ?: emptyList(),
             conditions = o.optJSONArray("conditions")?.let { a ->

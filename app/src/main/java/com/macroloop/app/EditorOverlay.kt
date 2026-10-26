@@ -113,6 +113,30 @@ class EditorOverlay(
 
     private fun count(list: List<Step>): Int = flat(list).size
 
+    private fun findStep(id: String): Step? = if (id.isEmpty()) null else flat(root).firstOrNull { it.id == id }
+
+    /** Every step with its number, branches included: "2", "2.1", "2.2"... */
+    private fun flatLabeled(list: List<Step>, prefix: String = ""): List<Pair<String, Step>> {
+        val out = ArrayList<Pair<String, Step>>()
+        list.forEachIndexed { i, s ->
+            val n = if (prefix.isEmpty()) "${i + 1}" else "$prefix.${i + 1}"
+            out.add(n to s)
+            out += flatLabeled(s.onSuccess, n)
+            out += flatLabeled(s.onFail, n)
+        }
+        return out
+    }
+
+    /** How many Run step and Go to steps point at this step. */
+    private fun linksTo(id: String): Int = flat(root).count { (it.type == StepType.LINK || it.type == StepType.GOTO) && it.targetId == id }
+
+    private fun linkName(s: Step): String {
+        if (s.targetId.isEmpty()) return "pick a step"
+        val t = findStep(s.targetId) ?: return "BROKEN LINK (the step was deleted)"
+        val n = flatLabeled(root).firstOrNull { it.second.id == t.id }?.first
+        return (if (n != null) "$n  " else "") + stepTitle(t)
+    }
+
     // ================================================================ lifecycle and the hand button
 
     fun show() = addChip()
@@ -396,6 +420,7 @@ class EditorOverlay(
                 row.addView(label("[${sign(s.offsetX)}/${sign(s.offsetY)}]", 12f, TokenInts.textMuted))
             }
             StepType.CLICK -> row.addView(label("Click (${s.x}, ${s.y})  [${sign(s.offsetX)}/${sign(s.offsetY)}]", 15f, TokenInts.text))
+            StepType.LINK -> row.addView(label("Run: " + linkName(s), 15f, if (findStep(s.targetId) == null) TokenInts.danger else TokenInts.text))
             else -> row.addView(label(s.describe(), 15f, TokenInts.text))
         }
         return row
@@ -421,11 +446,15 @@ class EditorOverlay(
                 parts.add("[Delay ${s.delayMs}ms/${s.waitNextMs}ms]")
             }
             StepType.GOTO -> parts.add("→ ${targetName(s)}")
+            StepType.LINK -> parts.add("[link: runs it, then carries on]")
             StepType.TOAST -> parts.add("\"${s.text.ifBlank { "..." }}\"")
             StepType.OPEN_APP -> parts.add(appLabel(s.text))
             StepType.WAIT, StepType.STOP_MACRO -> Unit
             else -> parts.add("[Delay ${s.delayMs}ms/${s.waitNextMs}ms]")
         }
+        if (s.linkedOnly) parts.add("[Runs only when linked]")
+        val n = linksTo(s.id)
+        if (n > 0 && s.type != StepType.LINK && s.type != StepType.GOTO) parts.add("[linked ×$n]")
         if (!s.enabled) parts.add("OFF")
         return parts.joinToString("  ")
     }
@@ -437,6 +466,7 @@ class EditorOverlay(
         StepType.WAIT -> "⏱"
         StepType.STOP_MACRO -> "■"
         StepType.GOTO -> "→"
+        StepType.LINK -> "↪"
         StepType.TOAST -> "✎"
         StepType.OPEN_APP -> "▶"
         else -> "◆"
@@ -873,6 +903,7 @@ class EditorOverlay(
                 Triple(Icon.PLAY, "Wait", pick(StepType.WAIT)),
                 Triple(Icon.CLOSE, "Stop Macro", pick(StepType.STOP_MACRO)),
                 Triple(Icon.REDO, "Go to Step", pick(StepType.GOTO)),
+                Triple(Icon.LINK, "Run Step (link)", pick(StepType.LINK)),
             ),
         )
         box.addView(MaxHeightScrollView(ctx, (screenH * 0.72).toInt()).apply { addView(body) })
@@ -925,6 +956,7 @@ class EditorOverlay(
             }, { finishAdd(target, Step(StepType.TOAST, text = toastField?.text?.toString().orEmpty())) })
             StepType.OPEN_APP -> openAppPicker { pkg -> finishAdd(target, Step(StepType.OPEN_APP, text = pkg)) }
             StepType.GOTO -> openLinkPicker { t -> finishAdd(target, Step(StepType.GOTO, targetId = t.id)) }
+            StepType.LINK -> openStepPicker("Run Step", null) { t -> finishAdd(target, Step(StepType.LINK, targetId = t.id)); askLinkedOnly(t) }
             else -> finishAdd(target, Step(kind))
         }
     }
@@ -939,6 +971,58 @@ class EditorOverlay(
         }
         if (root.isEmpty()) rows.add(Row("There are no steps to jump to yet."))
         showMenu("Go to Step", rows)
+    }
+
+    /** Lists every step of the macro, branches included, so one can be linked. */
+    private fun openStepPicker(title: String, exclude: String?, onPick: (Step) -> Unit) {
+        val rows = ArrayList<Row>()
+        rows.add(Row("Pick the step to run. It runs, then the list carries on."))
+        for ((n, st) in flatLabeled(root)) {
+            if (st.id == exclude || st.type == StepType.LINK && st.targetId == exclude) continue
+            val nested = n.contains('.')
+            rows.add(Row((if (nested) "    " else "") + "$n.  ${stepTitle(st)}" + (if (st.linkedOnly) "   (only when linked)" else ""), icon = Icon.LINK) { closeMenu(); onPick(st) })
+        }
+        if (root.isEmpty()) rows.add(Row("There are no steps to link yet."))
+        showMenu(title, rows)
+    }
+
+    /**
+     * A step in the main list that is also linked would run twice: once in its place and once from the link.
+     * Ask, in plain words, whether it should run only when linked.
+     */
+    private fun askLinkedOnly(t: Step) {
+        val inMain = root.any { it.id == t.id }
+        if (!inMain || t.linkedOnly) return
+        showDialogBox("Run it only when linked?") { box ->
+            box.addView(
+                label(
+                    "\"${stepTitle(t)}\" is also in the main list, so it would run in its place and again from the link. " +
+                        "Make it run only when a link calls it? You can undo this in its menu.",
+                    14f, TokenInts.textMuted,
+                ),
+                lp(8),
+            )
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            row.addView(textButton("ONLY WHEN LINKED (recommended)") {
+                modifyById(t.id) { it.copy(linkedOnly = true) }
+                closeMenu()
+                refreshPanel()
+            })
+            row.addView(textButton("KEEP IT IN THE ORDER TOO") { closeMenu(); refreshPanel() })
+            box.addView(row, lp(8))
+        }
+    }
+
+    /** Changes a step wherever it is in the tree. */
+    private fun modifyById(id: String, f: (Step) -> Step) {
+        fun walk(list: List<Step>): List<Step> = list.map { s ->
+            val n = if (s.id == id) f(s) else s
+            n.copy(onSuccess = walk(n.onSuccess), onFail = walk(n.onFail))
+        }
+        root = walk(root)
+        dirty = true
     }
 
     private fun openAppPicker(onPick: (String) -> Unit) {
@@ -959,7 +1043,7 @@ class EditorOverlay(
     private fun openCardMenu(ref: Ref) {
         val s = stepAt(ref) ?: return
         val rows = ArrayList<Row>()
-        val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO && s.type != StepType.GOTO
+        val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO && s.type != StepType.GOTO && s.type != StepType.LINK
         fun add(text: String, icon: Icon?, color: Int = TokenInts.text, act: () -> Unit) = rows.add(Row(text, color, icon, act))
 
         when (s.type) {
@@ -991,6 +1075,10 @@ class EditorOverlay(
                 closeMenu()
                 openAppPicker { pkg -> edit(ref) { it.copy(text = pkg) }; refreshPanel() }
             }
+            StepType.LINK -> add("Change Link", Icon.LINK) {
+                closeMenu()
+                openStepPicker("Run Step", s.id) { t -> edit(ref) { it.copy(targetId = t.id) }; askLinkedOnly(t); refreshPanel() }
+            }
             StepType.STOP_MACRO -> Unit
             else -> add("Edit Delay", Icon.PENCIL) { editDelayDialog(ref) }
         }
@@ -1004,24 +1092,71 @@ class EditorOverlay(
             add("Add step if true", Icon.PLUS, TokenInts.success) { openActionPicker(Target(ref.path + (ref.index to true))) }
             add("Add step if false", Icon.PLUS, TokenInts.warning) { openActionPicker(Target(ref.path + (ref.index to false))) }
         }
+        if (logical) {
+            add("Link a step if true", Icon.LINK, TokenInts.success) {
+                closeMenu()
+                openStepPicker("Run Step if true", s.id) { t -> addLinkTo(Target(ref.path + (ref.index to true)), t) }
+            }
+            add("Link a step if false", Icon.LINK, TokenInts.warning) {
+                closeMenu()
+                openStepPicker("Run Step if false", s.id) { t -> addLinkTo(Target(ref.path + (ref.index to false)), t) }
+            }
+        }
+        if (s.type != StepType.LINK && s.type != StepType.GOTO) {
+            add(if (s.linkedOnly) "Run in order again" else "Run only when linked", Icon.LINK) {
+                closeMenu()
+                edit(ref) { it.copy(linkedOnly = !it.linkedOnly) }
+                refreshPanel()
+            }
+        }
         add("Copy", Icon.COPY) { closeMenu(); clipboard = s; toast("Copied. Use Paste in the + menu.") }
-        add("Cut", Icon.COPY) {
-            closeMenu()
-            clipboard = s
-            modify(ref.path) { if (ref.index in it.indices) it.removeAt(ref.index) }
-            refreshPanel()
-        }
-        add("Delete", Icon.CLOSE, TokenInts.danger) {
-            closeMenu()
-            modify(ref.path) { if (ref.index in it.indices) it.removeAt(ref.index) }
-            refreshPanel()
-        }
+        add("Cut", Icon.COPY) { removeStep(ref, s, cut = true) }
+        add("Delete", Icon.CLOSE, TokenInts.danger) { removeStep(ref, s, cut = false) }
         add(if (s.enabled) "Disable" else "Enable", Icon.EYE_OFF) {
             closeMenu()
             edit(ref) { it.copy(enabled = !it.enabled) }
             refreshPanel()
         }
         showMenu(stepTitle(s), rows)
+    }
+
+    /** Adds a Run step link into a branch, and offers to make the linked step run only when linked. */
+    private fun addLinkTo(target: Target, t: Step) {
+        finishAdd(target, Step(StepType.LINK, targetId = t.id))
+        askLinkedOnly(t)
+    }
+
+    /** Deleting a step that links point to would break them, so say so first. */
+    private fun removeStep(ref: Ref, s: Step, cut: Boolean) {
+        val n = linksTo(s.id) + flat(s.onSuccess + s.onFail).sumOf { linksTo(it.id) }
+        fun doIt() {
+            closeMenu()
+            if (cut) clipboard = s
+            modify(ref.path) { if (ref.index in it.indices) it.removeAt(ref.index) }
+            refreshPanel()
+        }
+        if (n == 0) {
+            doIt()
+            return
+        }
+        closeMenu()
+        showDialogBox("This step is linked") { box ->
+            box.addView(
+                label(
+                    "$n link${if (n == 1) "" else "s"} point to \"${stepTitle(s)}\". If you ${if (cut) "cut" else "delete"} it, " +
+                        "${if (n == 1) "that link" else "those links"} will show as BROKEN and the macro will stop there until you pick another step.",
+                    14f, TokenInts.textMuted,
+                ),
+                lp(8),
+            )
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.END
+            }
+            row.addView(textButton("CANCEL") { closeMenu() })
+            row.addView(textButton(if (cut) "CUT ANYWAY" else "DELETE ANYWAY") { doIt() })
+            box.addView(row, lp(10))
+        }
     }
 
     private fun renameDialog(ref: Ref) {

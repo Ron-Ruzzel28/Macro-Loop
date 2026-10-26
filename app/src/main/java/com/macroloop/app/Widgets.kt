@@ -15,7 +15,7 @@ import kotlin.math.abs
 import kotlin.math.max
 
 /** Icons for the editor toolbar. Drawn here, so there are no image files. */
-enum class Icon { TAP, SWIPE, PICTURE, PLAY, EYE, EYE_OFF, LIST, SAVE, CLOSE, BACK, PLUS, SHRINK, MORE, GEAR, CHECK, REDO, COPY, PENCIL }
+enum class Icon { TAP, SWIPE, PICTURE, PLAY, EYE, EYE_OFF, LIST, SAVE, CLOSE, BACK, PLUS, SHRINK, MORE, GEAR, CHECK, REDO, COPY, PENCIL, LINK }
 
 class IconView(context: Context, var icon: Icon, private val color: Int) : View(context) {
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -104,6 +104,10 @@ class IconView(context: Context, var icon: Icon, private val color: Int) : View(
             Icon.COPY -> {
                 c.drawRoundRect(RectF(30f, 30f, 80f, 82f), 6f, 6f, stroke)
                 c.drawRoundRect(RectF(18f, 16f, 62f, 66f), 6f, 6f, stroke)
+            }
+            Icon.LINK -> {
+                c.drawRoundRect(RectF(10f, 34f, 56f, 66f), 16f, 16f, stroke)
+                c.drawRoundRect(RectF(44f, 34f, 90f, 66f), 16f, 16f, stroke)
             }
             Icon.PENCIL -> {
                 c.drawLine(24f, 76f, 70f, 30f, stroke)

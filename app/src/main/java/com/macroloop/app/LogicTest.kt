@@ -213,6 +213,78 @@ object LogicTest {
             )
         }
 
+        fun link(name: String, to: String) = step(name, StepType.LINK) { it.copy(targetId = to) }
+
+        check("A link runs the linked step and the list carries on", listOf("a", "x", "b")) {
+            macro(step("a") { it.copy(onSuccess = listOf(link("l", "x"))) }, step("b"), step("x") { it.copy(linkedOnly = true) })
+        }
+
+        check("A step marked 'only when linked' is skipped in the normal order", listOf("a", "b")) {
+            macro(step("a"), step("x") { it.copy(linkedOnly = true) }, step("b"))
+        }
+
+        check("A link as the fall back: If false runs the linked step, then the list goes on", listOf("a", "f", "b"),
+            setup = { it.script["a"] = Outcome.Missing("not found") }) {
+            macro(step("a") { it.copy(onFail = listOf(link("l", "f"))) }, step("b"), step("f") { it.copy(linkedOnly = true) })
+        }
+
+        check("A linked step brings its own If true steps", listOf("a", "x", "x1")) {
+            macro(
+                step("a") { it.copy(onSuccess = listOf(link("l", "x"))) },
+                step("x") { it.copy(linkedOnly = true, onSuccess = listOf(step("x1"))) },
+            )
+        }
+
+        check("A link to a step inside a branch works too", listOf("a", "n")) {
+            macro(
+                step("a") { it.copy(onSuccess = listOf(link("l", "n"))) },
+                step("holder") { it.copy(linkedOnly = true, onSuccess = listOf(step("n"))) },
+            )
+        }
+
+        check("A link to a deleted step stops with a clear message", listOf("a"),
+            expectEnd = { it != null && it.contains("deleted") }) {
+            macro(step("a") { it.copy(onSuccess = listOf(link("l", "gone"))) }, step("b"))
+        }
+
+        check("A link with no step chosen stops", emptyList(), expectEnd = { it != null && it.contains("no step chosen") }) {
+            macro(link("l", ""))
+        }
+
+        check("A link that leads back to itself is caught", listOf("x"),
+            expectEnd = { it != null && it.contains("link loop") }) {
+            macro(link("start", "x"), step("x") { it.copy(linkedOnly = true, onSuccess = listOf(link("again", "x"))) })
+        }
+
+        check("A linked step that cannot run (and has no If false) stops the macro", listOf("x"),
+            expectEnd = { it != null && it.startsWith("Stopped") },
+            setup = { it.script["x"] = Outcome.Missing("Stopped: not found") }) {
+            macro(link("l", "x"), step("b"), step("x") { it.copy(linkedOnly = true) })
+        }
+
+        check("A linked step with its own If false runs it, and the list goes on", listOf("x", "xf", "b"),
+            setup = { it.script["x"] = Outcome.Missing("not found") }) {
+            macro(link("l", "x"), step("b"), step("x") { it.copy(linkedOnly = true, onFail = listOf(step("xf"))) })
+        }
+
+        check("A Stop inside a linked step ends the macro", listOf("x"),
+            expectEnd = { it != null }) {
+            macro(link("l", "x"), step("b"), step("x") { it.copy(linkedOnly = true, onSuccess = listOf(step("s", StepType.STOP_MACRO))) })
+        }
+
+        check("A linked step that is turned off is skipped", listOf("b")) {
+            macro(link("l", "x"), step("b"), step("x") { it.copy(linkedOnly = true, enabled = false) })
+        }
+
+        check("After a link that failed, the next step sees 'failed'", listOf("x", "xf", "c"),
+            setup = { it.script["x"] = Outcome.Missing("not found") }) {
+            macro(
+                link("l", "x"),
+                step("c") { it.copy(conditions = listOf(Condition(kind = ConditionKind.ACTION_RESULT, resultOk = false))) },
+                step("x") { it.copy(linkedOnly = true, onFail = listOf(step("xf"))) },
+            )
+        }
+
         val passed = cases.count { it.ok }
         val lines = ArrayList<String>()
         lines += "Run rules: $passed of ${cases.size} checks passed"

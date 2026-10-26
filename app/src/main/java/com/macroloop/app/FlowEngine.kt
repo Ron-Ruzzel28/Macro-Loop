@@ -12,7 +12,10 @@ package com.macroloop.app
  *  - setup trouble (capture off, a missing picture file, a cancelled tap) always stops the macro;
  *  - Stop ends the macro from anywhere, even inside a branch;
  *  - Go to jumps to a step of the main list, and the run carries on from there;
- *  - a jump limit ends a loop that never ends.
+ *  - a jump limit ends a loop that never ends;
+ *  - a Run step link runs another step of the macro (with its own conditions and branches) and then the
+ *    list carries on from the link. A step marked "only when linked" is skipped in the normal order.
+ *    A link to a deleted step, or a link that leads back to itself, stops the macro with a clear message.
  */
 sealed class Outcome {
     data object Ok : Outcome()
@@ -58,11 +61,17 @@ interface StepHost {
 class RunState {
     val onceUsed = HashSet<String>()
     var jumps = 0
+    var byId: Map<String, Step> = emptyMap()   // every step of the macro, branches included, by id
+    val active = ArrayList<String>()            // linked steps being run right now
 }
 
 private class StepResult(val flow: Flow, val worked: Boolean)
 
 class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
+    private companion object {
+        const val MAX_LINK_DEPTH = 20
+    }
+
 
     /**
      * @param startList the list to run first. Null means the whole macro. A Go to link can jump to any
@@ -72,6 +81,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
     suspend fun run(macro: Macro, startList: List<Step>? = null, rounds: Int = macro.repeat): String? {
         val state = RunState()
         val root = macro.steps
+        state.byId = collect(root)
         for (round in 1..rounds) {
             var cur: List<Step> = startList ?: root
             var i = 0
@@ -99,6 +109,36 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         return null
     }
 
+    private fun collect(list: List<Step>): Map<String, Step> {
+        val out = HashMap<String, Step>()
+        fun walk(l: List<Step>) {
+            for (s in l) {
+                out[s.id] = s
+                walk(s.onSuccess)
+                walk(s.onFail)
+            }
+        }
+        walk(list)
+        return out
+    }
+
+    private suspend fun runLink(macroName: String, where: String, step: Step, prevOk: Boolean, state: RunState): StepResult {
+        if (step.targetId.isEmpty()) {
+            return StepResult(Flow.Stop("Stopped: the link in step $where has no step chosen. Edit it and pick one."), false)
+        }
+        val target = state.byId[step.targetId]
+            ?: return StepResult(Flow.Stop("Stopped: the link in step $where points to a step that was deleted. Edit it and pick another."), false)
+        if (step.targetId in state.active || state.active.size >= MAX_LINK_DEPTH) {
+            return StepResult(Flow.Stop("Stopped: the link in step $where leads back to a step that is already running (a link loop)."), false)
+        }
+        state.active.add(step.targetId)
+        try {
+            return runStep(macroName, "$where link", target, prevOk, state, viaLink = true)
+        } finally {
+            state.active.removeAt(state.active.lastIndex)
+        }
+    }
+
     private suspend fun runList(macroName: String, list: List<Step>, prefix: String, state: RunState): Flow {
         var prevOk = true
         for ((i, step) in list.withIndex()) {
@@ -111,9 +151,13 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         return Flow.Next
     }
 
-    private suspend fun runStep(macroName: String, where: String, step: Step, prevOk: Boolean, state: RunState): StepResult {
+    private suspend fun runStep(
+        macroName: String, where: String, step: Step, prevOk: Boolean, state: RunState, viaLink: Boolean = false,
+    ): StepResult {
         if (!step.enabled) return StepResult(Flow.Next, prevOk)
+        if (step.linkedOnly && !viaLink) return StepResult(Flow.Next, prevOk)
         when (step.type) {
+            StepType.LINK -> return runLink(macroName, where, step, prevOk, state)
             StepType.WAIT -> {
                 host.pause(host.humanWait(step.ms))
                 return StepResult(Flow.Next, true)
