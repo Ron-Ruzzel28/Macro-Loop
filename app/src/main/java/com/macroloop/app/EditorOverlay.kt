@@ -75,10 +75,12 @@ class EditorOverlay(
     }
 
     fun dismiss() {
+        removeMini()
         closeSheet()
         closeDialog()
         panel?.let { runCatching { wm.removeView(it) } }
         panel = null
+        removeMini()
         removeMatchBox()
         clearMarkers()
         linesView?.let { runCatching { wm.removeView(it) } }
@@ -378,6 +380,8 @@ class EditorOverlay(
         setTouchable(toolbar, toolbarOn)
         panel?.visibility = if (panelOn) View.VISIBLE else View.INVISIBLE
         setTouchable(panel, panelOn)
+        mini?.visibility = if (visible && minimized) View.VISIBLE else View.INVISIBLE
+        setTouchable(mini, visible && minimized)
         sheet?.visibility = v
         dialog?.visibility = v
         val mv = if (toolbarOn && markersShown) View.VISIBLE else View.INVISIBLE
@@ -1151,17 +1155,102 @@ class EditorOverlay(
 
     private class Row(val text: String, val color: Int = TokenInts.text, val action: (() -> Unit)? = null)
 
+    private var minimized = false
+    private var mini: View? = null
+    private var miniX = Ui.dp(ctx, 12)
+    private var miniY = Ui.dp(ctx, 160)
+
     private fun enterListMode() {
         closeSheet()
         closeDialog()
         removeMatchBox()
         listMode = true
+        removeMini()
         refreshPanel()
+    }
+
+    /** Shrinks the list into a small round button so you can see and use the real screen. */
+    private fun minimizePanel() {
+        closeDialog()
+        closeSheet()
+        minimized = true
+        panel?.let { runCatching { wm.removeView(it) } }
+        panel = null
+        panelScroll = null
+        val size = dp(52)
+        val v = TextView(ctx).apply {
+            text = "M"
+            textSize = 20f
+            setTextColor(TokenInts.onPrimary)
+            gravity = Gravity.CENTER
+            background = Ui.rounded(TokenInts.primary, size / 2f)
+            contentDescription = "Open the editor"
+        }
+        val lpm = WindowManager.LayoutParams(
+            size, size,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = miniX
+            y = miniY
+        }
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        var moved = false
+        v.setOnTouchListener { _, e ->
+            when (e.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = e.rawX; downY = e.rawY; startX = lpm.x; startY = lpm.y; moved = false
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = (e.rawX - downX).toInt()
+                    val dy = (e.rawY - downY).toInt()
+                    if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) moved = true
+                    if (moved) {
+                        lpm.x = startX + dx
+                        lpm.y = startY + dy
+                        miniX = lpm.x; miniY = lpm.y
+                        wm.updateViewLayout(v, lpm)
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP -> if (!moved) {
+                    minimized = false
+                    removeMini()
+                    refreshPanel()
+                }
+            }
+            true
+        }
+        wm.addView(v, lpm)
+        mini = v
+        applyVisibility(true)
+    }
+
+    private fun removeMini() {
+        minimized = false
+        mini?.let { runCatching { wm.removeView(it) } }
+        mini = null
+    }
+
+    private fun openPanelMenu() {
+        showBigMenu(
+            macroName,
+            listOf(
+                Row("Place on screen (markers)") { enterMarkerMode("Drag the markers. Tap List to come back.") },
+                Row("Save") { closeDialog(); save(); refreshPanel(); toast("Saved") },
+                Row("Close the editor", TokenInts.danger) { closeDialog(); requestClose() },
+            ),
+        )
     }
 
     private fun enterMarkerMode(msg: String?) {
         closeSheet()
         closeDialog()
+        removeMini()
         listMode = false
         rebuildMarkers()
         applyVisibility(true)
@@ -1191,6 +1280,7 @@ class EditorOverlay(
     }
 
     private fun refreshPanel() {
+        if (minimized) return
         panelScroll?.let { panelScrollY = it.scrollY }
         panel?.let { runCatching { wm.removeView(it) } }
         panel = null
@@ -1199,39 +1289,43 @@ class EditorOverlay(
 
         val rootView = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(12), dp(12), dp(8))
-            background = Ui.rounded(0xFF0F1115.toInt(), dp(20).toFloat())
+            setPadding(dp(10), dp(10), dp(10), dp(8))
+            background = Ui.rounded(0xFF0F1115.toInt(), dp(16).toFloat())
         }
-        rootView.addView(label(macroName, 22f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
         val n = countAll(whole)
-        rootView.addView(
-            label((if (n == 1) "1 step" else "$n steps") + (if (dirty) "  (not saved)" else ""), 13f, TokenInts.textMuted),
-            lp(0),
-        )
-        val buttons = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.addView(ToolButton(ctx, Icon.PLAY, "Test run", TokenInts.success) { testRun() }, weightLp())
-        buttons.addView(ToolButton(ctx, Icon.PLUS, "Add") { openAddPicker(emptyList(), null) }, weightLp())
-        buttons.addView(ToolButton(ctx, Icon.EYE, "On screen") { enterMarkerMode("Drag the markers. Tap List to come back.") }, weightLp())
-        buttons.addView(ToolButton(ctx, Icon.SAVE, "Save") { save(); refreshPanel(); toast("Saved") }, weightLp())
-        buttons.addView(ToolButton(ctx, Icon.CLOSE, "Close", TokenInts.danger) { requestClose() }, weightLp())
-        rootView.addView(buttons, lp(8))
+        val head = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        head.addView(IconBtn(ctx, Icon.SHRINK) { minimizePanel() }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        val titleCol = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        titleCol.addView(label(macroName, 17f, TokenInts.text).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+        titleCol.addView(label((if (n == 1) "1 step" else "$n steps") + (if (dirty) "  (not saved)" else ""), 11f, TokenInts.textMuted))
+        head.addView(titleCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10); marginEnd = dp(6) })
+        head.addView(IconBtn(ctx, Icon.PLAY, TokenInts.success) { testRun() }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(6) })
+        head.addView(IconBtn(ctx, Icon.PLUS) { openAddPicker(emptyList(), null) }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(6) })
+        head.addView(IconBtn(ctx, Icon.MORE) { openPanelMenu() }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        rootView.addView(head)
 
         val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         if (whole.isEmpty()) {
-            body.addView(label("No steps yet. Press Add to make the first one.", 17f, TokenInts.textMuted), lp(16))
+            body.addView(label("No steps yet. Tap + to make the first one.", 14f, TokenInts.textMuted), lp(16))
         } else {
             renderSteps(body, whole, emptyList(), 0, "")
         }
-        val scroll = ScrollView(ctx).apply {
+        val scroll = MaxHeightScrollView(ctx, (screenH * 0.78).toInt()).apply {
             addView(body)
             isVerticalScrollBarEnabled = true
         }
         panelScroll = scroll
-        rootView.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(8) })
+        rootView.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
 
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            (screenH * 0.93).toInt(),
+            (screenW - dp(16)),
+            WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -1242,6 +1336,7 @@ class EditorOverlay(
             gravity = Gravity.TOP
             y = dp(28)
         }
+        if (minimized) return
         wm.addView(rootView, params)
         panel = rootView
         scroll.post { scroll.scrollTo(0, panelScrollY) }
@@ -1251,7 +1346,7 @@ class EditorOverlay(
     private fun renderSteps(box: LinearLayout, list: List<Step>, path: List<Pair<Int, Boolean>>, depth: Int, prefix: String) {
         list.forEachIndexed { i, s ->
             val num = if (prefix.isEmpty()) "${i + 1}" else "$prefix.${i + 1}"
-            box.addView(buildCard(s, path, i, num), lp(8))
+            box.addView(buildCard(s, path, i, num), lp(6))
             if (s.onSuccess.isNotEmpty()) addBranch(box, s.onSuccess, path + (i to true), depth, num, true)
             if (s.onFail.isNotEmpty()) addBranch(box, s.onFail, path + (i to false), depth, num, false)
         }
@@ -1260,8 +1355,8 @@ class EditorOverlay(
     private fun addBranch(box: LinearLayout, list: List<Step>, path: List<Pair<Int, Boolean>>, depth: Int, num: String, ifTrue: Boolean) {
         val group = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(8), dp(8), dp(6))
-            background = Ui.rounded(if (ifTrue) 0x264ADE80 else 0x26FBBF24, dp(16).toFloat())
+            setPadding(dp(8), dp(6), dp(6), dp(4))
+            background = Ui.rounded(if (ifTrue) 0x264ADE80 else 0x26FBBF24, dp(12).toFloat())
         }
         val head = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1270,17 +1365,17 @@ class EditorOverlay(
             setOnClickListener { openAddPicker(path, null) }
         }
         head.addView(
-            label(if (ifTrue) "If true" else "If false", 18f, if (ifTrue) TokenInts.success else TokenInts.warning)
+            label(if (ifTrue) "If true" else "If false", 15f, if (ifTrue) TokenInts.success else TokenInts.warning)
                 .apply { setTypeface(typeface, android.graphics.Typeface.BOLD) },
         )
         head.addView(
-            label(if (ifTrue) "   step $num worked, then:" else "   step $num never found what it needs, then:", 13f, TokenInts.textMuted),
+            label(if (ifTrue) "   step $num worked, then:" else "   step $num found nothing, then:", 11f, TokenInts.textMuted),
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
-        head.addView(label("+", 22f, TokenInts.primary).apply { setPadding(dp(12), 0, dp(8), 0) })
+        head.addView(label("+", 18f, TokenInts.primary).apply { setPadding(dp(10), 0, dp(6), 0) })
         group.addView(head)
         renderSteps(group, list, path, depth + 1, num)
-        val lpGroup = lp(6).apply { marginStart = dp(16) }
+        val lpGroup = lp(4).apply { marginStart = dp(12) }
         box.addView(group, lpGroup)
     }
 
@@ -1313,11 +1408,11 @@ class EditorOverlay(
 
     private fun chip(text: String, color: Int, onClick: () -> Unit): TextView = TextView(ctx).apply {
         this.text = text
-        textSize = 16f
+        textSize = 12f
         setTextColor(TokenInts.onPrimary)
         setTypeface(typeface, android.graphics.Typeface.BOLD)
-        setPadding(dp(16), dp(8), dp(16), dp(8))
-        background = Ui.rounded(color, dp(20).toFloat())
+        setPadding(dp(12), dp(4), dp(12), dp(4))
+        background = Ui.rounded(color, dp(14).toFloat())
         isClickable = true
         setOnClickListener { onClick() }
     }
@@ -1327,21 +1422,21 @@ class EditorOverlay(
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(6), dp(4), dp(6))
+            setPadding(dp(2), dp(4), dp(2), dp(4))
             isClickable = true
             setOnClickListener { onClick() }
         }
-        row.addView(circle(if (ok) "✓" else "✕", if (ok) TokenInts.success else TokenInts.danger, TokenInts.onPrimary, 34), LinearLayout.LayoutParams(dp(34), dp(34)))
-        thumb(templateId, 64)?.let { row.addView(it, LinearLayout.LayoutParams(dp(76), dp(44)).apply { marginStart = dp(10) }) }
-        row.addView(label(text, 16f, TokenInts.text), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) })
+        row.addView(circle(if (ok) "✓" else "✕", if (ok) TokenInts.success else TokenInts.danger, TokenInts.onPrimary, 26), LinearLayout.LayoutParams(dp(26), dp(26)))
+        thumb(templateId, 64)?.let { row.addView(it, LinearLayout.LayoutParams(dp(64), dp(34)).apply { marginStart = dp(8) }) }
+        row.addView(label(text, 13f, TokenInts.text), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(8) })
         return row
     }
 
     private fun buildCard(s: Step, path: List<Pair<Int, Boolean>>, i: Int, num: String): View {
         val card = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(12), dp(12), dp(12))
-            background = Ui.rounded(if (s.enabled) 0xFF242833.toInt() else 0xFF1A1D24.toInt(), dp(16).toFloat())
+            setPadding(dp(10), dp(8), dp(8), dp(8))
+            background = Ui.rounded(if (s.enabled) 0xFF242833.toInt() else 0xFF1A1D24.toInt(), dp(12).toFloat())
             alpha = if (s.enabled) 1f else 0.55f
             isClickable = true
             setOnClickListener { openCardMenu(path, i) }
@@ -1357,17 +1452,17 @@ class EditorOverlay(
             StepType.CLICK_IMAGE -> "▣"
             StepType.STOP_MACRO -> "■"
         }
-        top.addView(circle(glyph, TokenInts.primary, TokenInts.onPrimary, 46), LinearLayout.LayoutParams(dp(46), dp(46)))
+        top.addView(circle(glyph, TokenInts.primary, TokenInts.onPrimary, 36), LinearLayout.LayoutParams(dp(36), dp(36)))
         val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(label(headline(s), 18f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+        col.addView(label(headline(s), 15f, TokenInts.text))
         val sub = subline(s)
-        if (sub.isNotEmpty()) col.addView(label(sub, 12f, TokenInts.textMuted))
-        top.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(12) })
+        if (sub.isNotEmpty()) col.addView(label(sub, 11f, TokenInts.textMuted))
+        top.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) })
         top.addView(
-            label(num, 14f, TokenInts.onPrimary).apply {
+            label(num, 12f, TokenInts.onPrimary).apply {
                 gravity = Gravity.CENTER
-                setPadding(dp(10), dp(2), dp(10), dp(2))
-                background = Ui.rounded(TokenInts.primary, dp(8).toFloat())
+                setPadding(dp(8), dp(1), dp(8), dp(1))
+                background = Ui.rounded(TokenInts.primary, dp(6).toFloat())
             },
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) },
         )
@@ -1376,7 +1471,7 @@ class EditorOverlay(
         // the logic tree: this step's own picture, then the extra conditions
         val tree = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(4), 0, 0)
+            setPadding(dp(14), dp(2), 0, 0)
         }
         var hasTree = false
         if (s.type == StepType.CLICK_IMAGE) {
@@ -1386,7 +1481,7 @@ class EditorOverlay(
         s.conditions.forEachIndexed { j, c ->
             if (hasTree || j > 0) {
                 val allTrue = j == 0 || !s.anyOf
-                val chipRow = LinearLayout(ctx).apply { setPadding(dp(46), dp(2), 0, dp(2)) }
+                val chipRow = LinearLayout(ctx).apply { setPadding(dp(34), dp(1), 0, dp(1)) }
                 chipRow.addView(
                     chip(if (allTrue) "All true" else "Any true", TokenInts.success) {
                         goTo(path)
@@ -1418,9 +1513,9 @@ class EditorOverlay(
             setPadding(dp(8), dp(12), dp(8), dp(8))
             background = Ui.rounded(0xFF1A1D24.toInt(), dp(20).toFloat())
         }
-        box.addView(label(title, 18f, TokenInts.text).apply {
+        box.addView(label(title, 16f, TokenInts.text).apply {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(dp(14), dp(2), dp(14), dp(10))
+            setPadding(dp(14), dp(2), dp(14), dp(8))
         })
         val list = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         for (r in rows) {
@@ -1428,11 +1523,11 @@ class EditorOverlay(
             list.addView(
                 TextView(ctx).apply {
                     text = r.text
-                    textSize = if (act == null) 14f else 20f
+                    textSize = if (act == null) 12f else 15f
                     setTextColor(if (act == null) TokenInts.textMuted else r.color)
                     gravity = Gravity.CENTER_VERTICAL
-                    minHeight = dp(if (act == null) 34 else 60)
-                    setPadding(dp(14), dp(if (act == null) 10 else 6), dp(14), dp(6))
+                    minHeight = dp(if (act == null) 28 else 46)
+                    setPadding(dp(14), dp(if (act == null) 8 else 4), dp(14), dp(4))
                     if (act != null) {
                         isClickable = true
                         setOnClickListener { act() }
@@ -1443,17 +1538,17 @@ class EditorOverlay(
         list.addView(
             TextView(ctx).apply {
                 text = "Cancel"
-                textSize = 20f
+                textSize = 15f
                 setTextColor(TokenInts.textMuted)
                 gravity = Gravity.CENTER_VERTICAL
-                minHeight = dp(60)
+                minHeight = dp(46)
                 setPadding(dp(14), dp(6), dp(14), dp(6))
                 isClickable = true
                 setOnClickListener { closeDialog() }
             },
         )
         box.addView(ScrollView(ctx).apply { addView(list) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        val h = minOf((screenH * 0.8).toInt(), dp(60 * rows.size + 150))
+        val h = minOf((screenH * 0.8).toInt(), dp(46 * rows.size + 120))
         val params = WindowManager.LayoutParams(
             (screenW * 0.92).toInt(), h,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -1466,7 +1561,7 @@ class EditorOverlay(
 
     private fun showEditDialog(title: String, build: (LinearLayout) -> Unit) {
         showDialog { box ->
-            box.addView(label(title, 20f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+            box.addView(label(title, 16f, TokenInts.text).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
             build(box)
             box.addView(Ui.button(ctx, "Done", TokenInts.primary, TokenInts.onPrimary) {
                 closeDialog()
@@ -1725,7 +1820,7 @@ class EditorOverlay(
             Ui.button(ctx, t, TokenInts.surfaceHigh, TokenInts.text) { f(); valueView.text = value() }.apply { minWidth = dp(48) }
         }
         row.addView(small("-", onMinus), LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)))
-        row.addView(valueView, LinearLayout.LayoutParams(dp(104), LinearLayout.LayoutParams.WRAP_CONTENT))
+        row.addView(valueView, LinearLayout.LayoutParams(dp(92), LinearLayout.LayoutParams.WRAP_CONTENT))
         row.addView(small("+", onPlus), LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)))
         return row
     }
@@ -1743,7 +1838,7 @@ class EditorOverlay(
 
     private fun label(text: String, size: Float, color: Int) = TextView(ctx).apply {
         this.text = text
-        textSize = size * 1.2f
+        textSize = size
         setTextColor(color)
     }
 

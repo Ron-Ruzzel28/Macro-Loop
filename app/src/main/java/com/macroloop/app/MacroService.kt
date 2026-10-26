@@ -116,68 +116,68 @@ class MacroService : AccessibilityService() {
         val macro = MacroRepository.get(macroId) ?: return
         closeEditor()
         stopRun()
+        val firstTime = playPanel == null
         removePlayPanel()
         playMacroId = macroId
 
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(8), dp(8), dp(8))
-            background = Ui.rounded(0xF01A1D24.toInt(), dp(20).toFloat())
+        // A small round Play button with a tiny X. Drag it anywhere; tap it to start.
+        val size = dp(76)
+        val box = android.widget.FrameLayout(this)
+        val circle = android.widget.FrameLayout(this).apply {
+            background = Ui.rounded(TokenInts.primary, dp(30).toFloat())
+            contentDescription = "Play ${macro.name}"
         }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(TextView(this).apply {
-            text = macro.name
-            textSize = 20f
-            setTextColor(TokenInts.text)
-            maxLines = 1
-            maxWidth = dp(150)
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        })
-        col.addView(TextView(this).apply {
-            text = "Ready. Open your app, then press Play."
+        circle.addView(IconView(this, Icon.PLAY, TokenInts.onPrimary), android.widget.FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER))
+        box.addView(circle, android.widget.FrameLayout.LayoutParams(dp(60), dp(60), Gravity.BOTTOM or Gravity.START))
+        val x = TextView(this).apply {
+            text = "x"
             textSize = 13f
-            setTextColor(TokenInts.textMuted)
-            maxWidth = dp(150)
-        })
-        bar.addView(col, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        val play = Ui.button(this, "Play", TokenInts.primary, TokenInts.onPrimary) { startFromPlayPanel() }
-        bar.addView(play, LinearLayout.LayoutParams(dp(92), dp(56)).apply { marginStart = dp(10) })
-        val close = Ui.button(this, "X", TokenInts.surfaceHigh, TokenInts.text) { closePlayPanel() }
-        bar.addView(close, LinearLayout.LayoutParams(dp(56), dp(56)).apply { marginStart = dp(8) })
+            gravity = Gravity.CENTER
+            setTextColor(TokenInts.text)
+            background = Ui.rounded(TokenInts.surfaceHigh, dp(13).toFloat())
+            isClickable = true
+            setOnClickListener { closePlayPanel() }
+        }
+        box.addView(x, android.widget.FrameLayout.LayoutParams(dp(26), dp(26), Gravity.TOP or Gravity.END))
 
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            size, size,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = playX
-            y = playY
+            this.x = playX
+            this.y = playY
         }
-        // Drag the panel by its name.
         var downX = 0f
         var downY = 0f
         var startX = 0
         var startY = 0
-        col.setOnTouchListener { _, e ->
+        var moved = false
+        circle.setOnTouchListener { _, e ->
             when (e.action) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y
+                    downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; moved = false
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    lp.x = startX + (e.rawX - downX).toInt()
-                    lp.y = startY + (e.rawY - downY).toInt()
-                    playX = lp.x; playY = lp.y
-                    wm.updateViewLayout(bar, lp)
+                    val dx = (e.rawX - downX).toInt()
+                    val dy = (e.rawY - downY).toInt()
+                    if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) moved = true
+                    if (moved) {
+                        lp.x = startX + dx
+                        lp.y = startY + dy
+                        playX = lp.x; playY = lp.y
+                        wm.updateViewLayout(box, lp)
+                    }
                 }
+                android.view.MotionEvent.ACTION_UP -> if (!moved) startFromPlayPanel()
             }
             true
         }
-        wm.addView(bar, lp)
-        playPanel = bar
+        wm.addView(box, lp)
+        playPanel = box
+        if (firstTime) Toast.makeText(this, "${macro.name} is ready. Open your app, then tap the Play button.", Toast.LENGTH_LONG).show()
     }
 
     private fun startFromPlayPanel() {

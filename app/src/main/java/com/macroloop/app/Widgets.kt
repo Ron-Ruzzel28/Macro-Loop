@@ -15,7 +15,7 @@ import kotlin.math.abs
 import kotlin.math.max
 
 /** Icons for the editor toolbar. Drawn here, so there are no image files. */
-enum class Icon { TAP, SWIPE, PICTURE, PLAY, EYE, EYE_OFF, LIST, SAVE, CLOSE, BACK, PLUS }
+enum class Icon { TAP, SWIPE, PICTURE, PLAY, EYE, EYE_OFF, LIST, SAVE, CLOSE, BACK, PLUS, SHRINK, MORE }
 
 class IconView(context: Context, var icon: Icon, private val color: Int) : View(context) {
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -81,6 +81,19 @@ class IconView(context: Context, var icon: Icon, private val color: Int) : View(
                 val p = Path().apply { moveTo(46f, 28f); lineTo(24f, 50f); lineTo(46f, 72f) }
                 c.drawPath(p, stroke)
             }
+            Icon.SHRINK -> {
+                c.drawLine(24f, 24f, 46f, 46f, stroke)
+                c.drawLine(76f, 76f, 54f, 54f, stroke)
+                val a = Path().apply { moveTo(46f, 28f); lineTo(46f, 46f); lineTo(28f, 46f) }
+                val b = Path().apply { moveTo(54f, 72f); lineTo(54f, 54f); lineTo(72f, 54f) }
+                c.drawPath(a, stroke)
+                c.drawPath(b, stroke)
+            }
+            Icon.MORE -> {
+                c.drawCircle(50f, 24f, 8f, fill)
+                c.drawCircle(50f, 50f, 8f, fill)
+                c.drawCircle(50f, 76f, 8f, fill)
+            }
             Icon.PLUS -> {
                 c.drawLine(50f, 22f, 50f, 78f, stroke)
                 c.drawLine(22f, 50f, 78f, 50f, stroke)
@@ -108,13 +121,13 @@ class ToolButton(
     init {
         orientation = VERTICAL
         gravity = Gravity.CENTER
-        setPadding(Ui.dp(context, 2), Ui.dp(context, 6), Ui.dp(context, 2), Ui.dp(context, 4))
+        setPadding(Ui.dp(context, 2), Ui.dp(context, 5), Ui.dp(context, 2), Ui.dp(context, 3))
         background = Ui.rounded(TokenInts.surfaceHigh, Ui.dp(context, 12).toFloat())
         isClickable = true
         contentDescription = label
-        addView(iconView, LayoutParams(Ui.dp(context, 34), Ui.dp(context, 34)))
+        addView(iconView, LayoutParams(Ui.dp(context, 26), Ui.dp(context, 26)))
         text.text = label
-        text.textSize = 13f
+        text.textSize = 11f
         text.setTextColor(TokenInts.text)
         text.gravity = Gravity.CENTER
         addView(text, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
@@ -258,5 +271,29 @@ class LinesView(context: Context) : View(context) {
 
     override fun onDraw(c: Canvas) {
         for (l in lines) c.drawLine(l[0], l[1], l[2], l[3], paint)
+    }
+}
+
+
+/** A small round icon button (44 dp touch target) with no label. */
+class IconBtn(
+    context: Context,
+    icon: Icon,
+    color: Int = TokenInts.primary,
+    sizeDp: Int = 44,
+    onClick: () -> Unit,
+) : android.widget.FrameLayout(context) {
+    init {
+        background = Ui.rounded(TokenInts.surfaceHigh, Ui.dp(context, sizeDp / 2).toFloat())
+        isClickable = true
+        addView(IconView(context, icon, color), LayoutParams(Ui.dp(context, 22), Ui.dp(context, 22), Gravity.CENTER))
+        setOnClickListener { onClick() }
+    }
+}
+
+/** A scroll view that never grows taller than [maxPx], so a short list hugs its content. */
+class MaxHeightScrollView(context: Context, private val maxPx: Int) : android.widget.ScrollView(context) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(maxPx, MeasureSpec.AT_MOST))
     }
 }
