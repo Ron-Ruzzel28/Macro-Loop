@@ -139,7 +139,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
     private suspend fun runRounds(macro: Macro, startList: List<Step>?, rounds: Int, state: RunState, root: List<Step>): String? {
         // In Scan mode a pass where nothing was done does not count: the list is looked at again, until something happens.
         // A rounds number of 0 means until stopped.
-        val loopIdle = state.scan && startList == null
+        val loopIdle = state.scan
         var done = 0
         var round = 0
         while (rounds <= 0 || done < rounds) {

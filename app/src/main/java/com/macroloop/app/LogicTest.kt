@@ -444,9 +444,12 @@ object LogicTest {
         scanCheck("Scan: a passing round counts only when something was done (repeat 2)", listOf("a", "b", "a", "b"), rounds = 2,
             m = scanned(step("a"), step("b")))
 
-        scanCheck("Scan: a test run of one step does not loop forever", emptyList(),
-            setup = { it.images["p"] = false }, start = { m -> listOf(m.steps[0]) },
+        scanCheck("Scan: a test from a step looks again until its picture shows up, like a real run", listOf("a"),
+            setup = { it.imageFlipAt["p"] = 600 }, start = { m -> listOf(m.steps[0]) },
             m = scanned(step("a") { it.copy(conditions = listOf(pic)) }))
+
+        scanCheck("Scan: repeat 3 goes round three times that did something", listOf("a", "a", "a"), rounds = 3,
+            m = scanned(step("a")))
 
         scanCheck("Scan: Stop ends it even while nothing is on screen", listOf("s1"),
             setup = { it.images["p"] = true },

@@ -597,7 +597,7 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = repeat, onValueChange = { repeat = it.filter { c -> c.isDigit() }.take(4) },
-                    label = { Text("Repeat the whole macro") }, singleLine = true,
+                    label = { Text("Repeat the whole macro (0 = until you press Stop)") }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(16.dp))

@@ -25,7 +25,7 @@ object MacroRepository {
     fun get(id: String): Macro? = macros.firstOrNull { it.id == id }
 
     fun create(name: String, landscape: Boolean = false): Macro {
-        val m = Macro(id = UUID.randomUUID().toString(), name = name.trim().ifEmpty { "New macro" }, landscape = landscape)
+        val m = Macro(id = UUID.randomUUID().toString(), name = name.trim().ifEmpty { "New macro" }, landscape = landscape, repeat = 0)
         macros.add(0, m)
         persist()
         return m

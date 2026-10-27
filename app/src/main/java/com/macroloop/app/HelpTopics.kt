@@ -142,6 +142,11 @@ object HelpTopics {
         t("sec_watchers", "Watchers", "Things the macro watches for all the time, like a popup. When one shows up, its steps run, then the macro carries on.", "If the \"X\" of an ad shows up, tap it.",
             "Use a watcher for popups, instead of adding extra steps everywhere.", "A watcher with no condition does nothing.")
         t("sec_stuck", "Stuck rescue", "Steps that run when the screen has been frozen for a while (set in Stuck check).", "Press Back, then open the game again.", "With no steps here, the macro just stops with a message.")
+        t("loop", "Loop", "How many times the whole list of steps goes round: forever (until you stop it) or a number of times.",
+            "Forever, with 'Stop when it sees' a picture: it keeps going round until that picture shows up.",
+            "New macros loop forever. Press the red Stop button to end any run.", "Forever with nothing to stop it. You then have to press Stop.")
+        t("stop_when", "Stop when it sees...", "Makes a watcher that stops the macro when a picture, colour, words or a counter is seen.",
+            "Stop when the 'Quest complete' picture appears.", "Look in Watchers to change or remove it later.", "Choosing something that is always on screen. It stops straight away.")
         t("scan_mode", "Scan mode", "ON: the macro goes through the steps quickly. Each step looks at the screen once. If its picture is there it does the action, if not it skips that step at once, and the list starts again. OFF: a step waits (up to its time limit) for its picture.",
             "Step 1 taps Claim when it shows, step 2 taps Close when it shows. With Scan mode the macro loops and does whichever one is on screen right now.",
             "Keep it on for games. Set Repeat to 0 on the macro's info page to keep going until you press Stop. A pass where nothing happened does not count as a repeat.",
@@ -199,7 +204,7 @@ object HelpTopics {
         "change to appears" to "change_appear", "change to not appear" to "change_appear", "change to:" to "change_appear",
         "change to success" to "cond_action_result", "change to failed" to "cond_action_result",
         "watchers" to "sec_watchers", "stuck rescue" to "sec_stuck", "counters" to "counters", "stuck check" to "stuck_check",
-        "schedule" to "schedule", "help topics" to "help_topics", "scan mode" to "scan_mode",
+        "schedule" to "schedule", "help topics" to "help_topics", "scan mode" to "scan_mode", "loop:" to "loop", "stop when" to "stop_when",
     )
 
     /** The help for a menu row or a button, found by its words. Null when there is nothing to say. */

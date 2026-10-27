@@ -55,7 +55,7 @@ class EditorOverlay(
 ) {
     private val macroId = macro.id
     private val macroName = macro.name
-    private val repeat = macro.repeat
+    private var repeat = macro.repeat
     private val game = macro.game
     private val version = macro.version
     private val base = macro
@@ -74,7 +74,7 @@ class EditorOverlay(
         set(v) { when (section) { 0 -> mainSteps = v; 1 -> watchers = v; else -> stuck = v } }
 
     private fun current(): Macro = base.copy(
-        steps = mainSteps, watchers = watchers, stuck = stuck, counters = counters, stuckSec = stuckSec, schedule = schedule, scan = scan,
+        steps = mainSteps, watchers = watchers, stuck = stuck, counters = counters, stuckSec = stuckSec, schedule = schedule, scan = scan, repeat = repeat,
     )
 
     private fun everyStep(): List<Step> = flat(mainSteps) + flat(watchers) + flat(stuck)
@@ -2015,6 +2015,8 @@ class EditorOverlay(
         sec(1, "Watchers (${watchers.size})")
         sec(2, "Stuck rescue (${stuck.size})")
         rows.add(Row("Settings"))
+        rows.add(Row("Loop: " + (if (repeat <= 0) "forever" else "$repeat time${if (repeat == 1) "" else "s"}"), icon = Icon.REDO) { loopDialog() })
+        rows.add(Row("Stop when it sees...", icon = Icon.CLOSE) { addStopWhen() })
         rows.add(Row("Scan mode: " + (if (scan) "on" else "off"), icon = Icon.REDO) {
             scan = !scan
             dirty = true
@@ -2027,6 +2029,34 @@ class EditorOverlay(
         rows.add(Row("Help"))
         rows.add(Row("Help topics", icon = Icon.LIST) { openHelpList() })
         showMenu("Macro", rows, anchor = dp(24) to dp(70))
+    }
+
+    private fun loopDialog() {
+        var forever = repeat <= 0
+        var n: EditText? = null
+        showForm(
+            "Loop",
+            "How many times the whole list of steps goes round. A round counts when at least one step did something. Press Stop on the round button, or use Stop when it sees..., to end it.",
+            { b ->
+                b.addView(checkBox("Forever (until it is stopped)", forever) { forever = it }, lp(6))
+                n = field(b, "Or this many times", if (repeat > 0) repeat.toString() else "1")
+            },
+            {
+                repeat = if (forever) 0 else (n?.text.toString().toIntOrNull() ?: 1).coerceIn(1, 9999)
+                dirty = true
+            },
+        )
+    }
+
+    /** A watcher whose only job is to stop the macro: it ends when the picture, colour, words or counter you choose is seen. */
+    private fun addStopWhen() {
+        closeMenu()
+        section = 1
+        panelScrollY = 0
+        modify(emptyList()) { it.add(Step(StepType.WATCH, name = "Stop when it sees...", onSuccess = listOf(Step(StepType.STOP_MACRO)))) }
+        refreshPanel()
+        toast("Choose what it should see. The macro stops when it does.")
+        openConditionPicker(Ref(emptyList(), watchers.size - 1))
     }
 
     private fun addWatcher() {
@@ -2810,7 +2840,7 @@ class EditorOverlay(
             return
         }
         val svc = MacroService.instance ?: return
-        val macro = current().copy(repeat = 1)
+        val macro = current()          // a test goes round the same way a real run does, until it is stopped or finishes
         val done = { setHidden(false) }
         when (kind) {
             1 -> {
