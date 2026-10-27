@@ -86,6 +86,14 @@ class EditorOverlay(
     private val screenW: Int get() = Ui.screenBounds(wm).width()
     private val screenH: Int get() = Ui.screenBounds(wm).height()
 
+    /** A short screen (the phone held sideways): popups start near the top, so nothing slides off the bottom. */
+    private val shortScreen: Boolean get() = screenH < dp(520)
+
+    private fun topY(normal: Int) = if (shortScreen) dp(6) else normal
+
+    /** The most height a scrolling list may have when it starts at [top] and [chrome] pixels of title and buttons share the popup. */
+    private fun capH(top: Int, chrome: Int): Int = (screenH - top - chrome - dp(10)).coerceAtLeast(dp(90))
+
     private var chip: View? = null
     private var chipX = Ui.dp(ctx, 12)
     private var chipY = Ui.dp(ctx, 170)
@@ -220,7 +228,7 @@ class EditorOverlay(
         }
         val hasMore = more.childCount > 0
         body.addView(more)
-        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.55).toInt(), screenH - dp(300))).apply { addView(body) })
+        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.7).toInt(), capH(topY(dp(90)), dp(120)))).apply { addView(body) })
         val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
         if (tour) row.addView(textButton("ALL TIPS") { rm(helpView); helpView = null; openHelpList() })
         if (hasMore) {
@@ -235,7 +243,7 @@ class EditorOverlay(
         row.addView(textButton("CLOSE") { rm(helpView); helpView = null })
         box.addView(row, lp(8))
         val w = (screenW * 0.9).toInt()
-        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, dp(90), outside = true)
+        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, topY(dp(90)), outside = true)
         box.setOnTouchListener { _, e -> if (e.action == MotionEvent.ACTION_OUTSIDE) { rm(helpView); helpView = null; true } else false }
         wm.addView(box, p)
         helpView = box
@@ -857,12 +865,12 @@ class EditorOverlay(
                 },
             )
         }
-        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.78).toInt(), screenH - dp(230))).apply { addView(list) })
+        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.85).toInt(), capH(if (anchor != null) anchor.second.coerceIn(0, (screenH - dp(120)).coerceAtLeast(0)) else topY(dp(80)), dp(70)))).apply { addView(list) })
         val w = if (anchor != null) dp(260) else (screenW * 0.9).toInt()
         val p = if (anchor != null) {
-            params(w, WindowManager.LayoutParams.WRAP_CONTENT, anchor.first.coerceIn(0, screenW - w), anchor.second.coerceIn(0, screenH - dp(300)), outside = true)
+            params(w, WindowManager.LayoutParams.WRAP_CONTENT, anchor.first.coerceIn(0, screenW - w), anchor.second.coerceIn(0, (screenH - dp(120)).coerceAtLeast(0)), outside = true)
         } else {
-            params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, dp(80), outside = true)
+            params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, topY(dp(80)), outside = true)
         }
         box.setOnTouchListener { _, e ->
             if (e.action == MotionEvent.ACTION_OUTSIDE) {
@@ -886,10 +894,12 @@ class EditorOverlay(
         box.addView(label(title, 20f, TokenInts.text))
         build(box)
         val w = (screenW * 0.9).toInt()
-        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, dp(110), focusable = focusable)
+        val top = topY(dp(110))
+        val holder = MaxHeightScrollView(ctx, screenH - top - dp(8)).apply { addView(box) }
+        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, top, focusable = focusable)
         if (focusable) p.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN or WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
-        wm.addView(box, p)
-        menu = box
+        wm.addView(holder, p)
+        menu = holder
         applyHidden()
     }
 
@@ -1091,10 +1101,10 @@ class EditorOverlay(
                 Triple(Icon.LINK, "Run Step (link)", pick(StepType.LINK)),
             ),
         )
-        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.72).toInt(), screenH - dp(210))).apply { addView(body) })
+        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.8).toInt(), capH(topY(dp(70)), dp(100)))).apply { addView(body) })
         box.addView(textButton("CANCEL") { closeMenu() }.apply { gravity = Gravity.END }, lp(6))
         val w = (screenW * 0.94).toInt()
-        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, dp(70), outside = true)
+        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, topY(dp(70)), outside = true)
         box.setOnTouchListener { _, e -> if (e.action == MotionEvent.ACTION_OUTSIDE) { closeMenu(); true } else false }
         wm.addView(box, p)
         menu = box
@@ -1723,10 +1733,10 @@ class EditorOverlay(
                 Triple(Icon.PLUS, "Counter Below") { closeMenu(); addCounterCondition(ref, false) },
             ),
         )
-        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.7).toInt(), screenH - dp(230))).apply { addView(body) })
+        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.8).toInt(), capH(topY(dp(90)), dp(100)))).apply { addView(body) })
         box.addView(textButton("CANCEL") { closeMenu() }.apply { gravity = Gravity.END }, lp(6))
         val w = (screenW * 0.94).toInt()
-        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, dp(90), outside = true)
+        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, topY(dp(90)), outside = true)
         box.setOnTouchListener { _, e -> if (e.action == MotionEvent.ACTION_OUTSIDE) { closeMenu(); true } else false }
         wm.addView(box, p)
         menu = box
@@ -1866,7 +1876,7 @@ class EditorOverlay(
         }
         showDialogBox("Image") { box ->
             val view = PicCropView(ctx, bmp, withDot, android.graphics.PointF(bmp.width / 2f + offX, bmp.height / 2f + offY))
-            box.addView(view, lp(10).apply { height = dp(280) })
+            box.addView(view, lp(10).apply { height = (screenH - topY(dp(110)) - dp(210)).coerceIn(dp(110), dp(280)) })
             box.addView(
                 label(if (withDot) "Drag the corners to crop the picture smaller. Drag the dot to choose where the tap lands." else "Drag the corners to crop the picture smaller.", 12f, TokenInts.textMuted),
                 lp(8),
@@ -2180,7 +2190,7 @@ class EditorOverlay(
                     repeat(3 - chunk.size) { row.addView(View(ctx), LinearLayout.LayoutParams(0, dp(70), 1f)) }
                     grid.addView(row)
                 }
-                box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.5).toInt(), screenH - dp(270))).apply { addView(grid) }, lp(8))
+                box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.6).toInt(), capH(topY(dp(110)), dp(150)))).apply { addView(grid) }, lp(8))
             }
             box.addView(textButton("CANCEL") { closeMenu() }.apply { gravity = Gravity.END }, lp(6))
         }
