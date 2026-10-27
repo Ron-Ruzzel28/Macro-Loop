@@ -73,6 +73,8 @@ class MacroService : AccessibilityService() {
         TemplateStore.init(applicationContext)
         Matcher.ensureLoaded()
         License.init(applicationContext)
+        RunLog.init(applicationContext)
+        MacroScheduler.reschedule(applicationContext)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
@@ -184,11 +186,19 @@ class MacroService : AccessibilityService() {
             s.conditions.any { it.enabled && (it.kind == ConditionKind.IMAGE || it.kind == ConditionKind.COLOR || it.kind == ConditionKind.TEXT) }
     }
 
+    /** Also true when only a watcher looks at the screen, or the stuck check is on. */
+    fun needsCapture(macro: Macro): Boolean = needsCapture(macro.lists.flatten()) || macro.stuckSec > 0
+
     /** Checks the whole macro before it starts, so a setup problem is said at once and not after a long wait. */
-    private fun preflight(steps: List<Step>): String? {
-        val all = allSteps(steps)
-        if (needsCapture(steps) && !CaptureService.running) {
+    private fun preflight(macro: Macro): String? {
+        val all = allSteps(macro.lists.flatten())
+        if (needsCapture(macro) && !CaptureService.running) {
             return "Screen capture is off. Open MacroLoop and press Edit Mode or Play Mode again, then tap Start."
+        }
+        for (w in macro.watchers) {
+            if (w.enabled && w.type == StepType.WATCH && w.conditions.none { it.enabled }) {
+                return "A watcher has no condition yet. Edit the macro, open Watchers and add one."
+            }
         }
         for (s in all) {
             if (s.enabled && s.type == StepType.CLICK_IMAGE && TemplateStore.load(s.templateId) == null) {
@@ -221,15 +231,29 @@ class MacroService : AccessibilityService() {
         onFinished: (() -> Unit)? = null,
         startList: List<Step>? = null,
         rounds: Int = macro.repeat,
+        maxMinutes: Int = 0,
     ) {
         stopRun()
         showRunBar()
+        val startedAt = SystemClock.elapsedRealtime()
+        var result: String? = null
+        val logged = startList == null           // test runs from the editor are not logged
         runJob = scope.launch {
             val capture = CaptureService.instance
             var dog: Job? = null
+            var limit: Job? = null
             try {
+                if (maxMinutes > 0) {
+                    limit = launch {
+                        delay(maxMinutes * 60_000L)
+                        result = "Stopped: the ${maxMinutes} minute limit of the schedule was reached."
+                        finish(result!!)
+                        runJob?.cancel()
+                    }
+                }
                 if (!License.allowed(this@MacroService)) {
-                    finish("Stopped: " + License.message)
+                    result = "Stopped: " + License.message
+                    finish(result!!)
                     return@launch
                 }
                 // Refresh the licence in the background when the last answer is getting old.
@@ -241,15 +265,17 @@ class MacroService : AccessibilityService() {
                     while (true) {
                         delay(5 * 60_000L)
                         if (!License.allowed(this@MacroService)) {
-                            finish("Stopped: " + License.message)
+                            result = "Stopped: " + License.message
+                            finish(result!!)
                             runJob?.cancel()
                             break
                         }
                     }
                 }
-                val problem = preflight(macro.steps)
+                val problem = preflight(macro)
                 if (problem != null) {
-                    finish("Stopped: $problem")
+                    result = "Stopped: $problem"
+                    finish(result!!)
                     return@launch
                 }
                 capture?.fast = true
@@ -257,15 +283,36 @@ class MacroService : AccessibilityService() {
                 // so the first tap does not land on a window that is still there.
                 delay(START_SETTLE_MS)
                 val end = FlowEngine(RunHost(macro.name)).run(macro, startList, rounds)
-                finish(end ?: "Finished: ${macro.name}")
+                result = end ?: "Finished: ${macro.name}"
+                finish(result!!)
             } catch (e: CancellationException) {
                 throw e
             } finally {
                 dog?.cancel()
+                limit?.cancel()
                 capture?.fast = false
+                if (logged) {
+                    val text = result ?: "Stopped by you."
+                    val problem = text.startsWith("Stopped:") && !text.startsWith("Stopped by a Stop step")
+                    RunLog.add(macro.name, text, problem, ((SystemClock.elapsedRealtime() - startedAt) / 1000).toInt(), if (problem) CaptureService.grab() else null)
+                }
                 onFinished?.invoke()
             }
         }
+    }
+
+    /**
+     * Starts a macro because its schedule says so. Says what stopped it, if it cannot start.
+     * Returns null when it started, otherwise the reason.
+     */
+    fun startScheduled(macro: Macro): String? {
+        if (!License.allowed(this)) return "MacroLoop is locked: " + License.message
+        if (isRunning()) return "another macro was already running"
+        if (needsCapture(macro) && !CaptureService.running) return "screen capture is off. Open MacroLoop and tap Start"
+        closeEditor()
+        closePlayChip()
+        runMacro(macro, maxMinutes = macro.schedule.durationMin)
+        return null
     }
 
     /** Test one step on its own: its action only, with no conditions, branches or jumps. */
@@ -324,6 +371,40 @@ class MacroService : AccessibilityService() {
         private val baselines = HashMap<Condition, Int>()
 
         override fun resetBaselines() = baselines.clear()
+
+        private var waitHook: (suspend () -> Unit)? = null
+
+        override fun setWaitHook(hook: (suspend () -> Unit)?) {
+            waitHook = hook
+        }
+
+        override fun counterLoad(macroId: String, name: String) = CounterStore.load(this@MacroService, macroId, name)
+
+        override fun counterSave(macroId: String, name: String, value: Int) = CounterStore.save(this@MacroService, macroId, name, value)
+
+        private var lastThumb: IntArray? = null
+
+        /** Looks at a small, grey copy of the screen without its top and bottom strips (clock, buttons) and says if it differs. */
+        override suspend fun screenChanged(): Boolean? {
+            val frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 400, 250) ?: return null
+            val now = withContext(Dispatchers.Default) {
+                val small = Bitmap.createScaledBitmap(frame, 24, 48, true)
+                val px = IntArray(24 * 48)
+                small.getPixels(px, 0, 24, 0, 0, 24, 48)
+                val out = IntArray(24 * 40)
+                for (y in 0 until 40) for (x in 0 until 24) {
+                    val c = px[(y + 4) * 24 + x]
+                    out[y * 24 + x] = (((c shr 16) and 255) * 3 + ((c shr 8) and 255) * 6 + (c and 255)) / 10
+                }
+                out
+            }
+            val before = lastThumb
+            lastThumb = now
+            if (before == null) return true
+            var sum = 0L
+            for (i in now.indices) sum += kotlin.math.abs(now[i] - before[i])
+            return sum.toDouble() / now.size > 3.0
+        }
 
         override suspend fun imageHolds(c: Condition): ImageCheck {
             if (c.kind == ConditionKind.COLOR || c.kind == ConditionKind.TEXT) return screenHolds(c)
@@ -494,6 +575,7 @@ class MacroService : AccessibilityService() {
                 val elapsed = SystemClock.elapsedRealtime() - startedAt
                 if (elapsed >= step.timeoutMs) break
                 delay(120)
+                waitHook?.invoke()
             }
             flash(listOfNotNull(last), false)
             return Outcome.Missing(
@@ -618,7 +700,8 @@ class MacroService : AccessibilityService() {
         val lp = WindowManager.LayoutParams(
             size, size,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START

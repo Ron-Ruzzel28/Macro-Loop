@@ -7,9 +7,11 @@ enum class StepType {
     CLICK, SWIPE, WAIT, CLICK_IMAGE, STOP_MACRO, GOTO, LINK,
     PRESS_BACK, PRESS_HOME, OPEN_RECENT, OPEN_NOTIFICATION, OPEN_QUICKSETTING, LOCK_SCREEN,
     TOAST, OPEN_APP,
+    COUNTER_ADD, COUNTER_RESET,
+    WATCH,          // a watcher: its conditions are looked at all the time, and its If true steps run when they hold
 }
 
-enum class ConditionKind { IMAGE, ACTION_RESULT, RANDOM, ONCE, COLOR, TEXT }
+enum class ConditionKind { IMAGE, ACTION_RESULT, RANDOM, ONCE, COLOR, TEXT, COUNTER }
 
 /**
  * Something that has to be true before a step runs.
@@ -19,6 +21,7 @@ enum class ConditionKind { IMAGE, ACTION_RESULT, RANDOM, ONCE, COLOR, TEXT }
  *  ONCE          true only the first time during one run
  *  COLOR         a colour is in an area (or whole screen); with changes = true, the area's colour has changed since it was first looked at
  *  TEXT          the words are on screen (mustAppear = false: they are not)
+ *  COUNTER       the counter named [text] is at least [percent] (mustAppear = true) or below it (false)
  */
 data class Condition(
     val kind: ConditionKind = ConditionKind.IMAGE,
@@ -79,6 +82,7 @@ data class Step(
     val id: String = java.util.UUID.randomUUID().toString(),
     val name: String = "",             // the user's own label, shown instead of the description
     val targetId: String = "",         // GOTO: the id of the step to jump to
+    val amount: Int = 1,               // COUNTER_ADD: how much to add (the counter's name is in [text])
     val text: String = "",             // TOAST: the message. OPEN_APP: the package name
     val x: Int = 0,
     val y: Int = 0,
@@ -141,6 +145,9 @@ data class Step(
         StepType.LOCK_SCREEN -> "Lock Screen"
         StepType.TOAST -> "Toast Message"
         StepType.OPEN_APP -> "Open App"
+        StepType.COUNTER_ADD -> "Add $amount to counter ${text.ifBlank { "?" }}"
+        StepType.COUNTER_RESET -> "Reset counter ${text.ifBlank { "?" }}"
+        StepType.WATCH -> "Watcher"
     }
 
     /** True for steps that tap or swipe somewhere (they have click style, offset and delay). */
@@ -151,6 +158,7 @@ data class Step(
         .put("id", id)
         .put("name", name)
         .put("targetId", targetId)
+        .put("amount", amount)
         .put("text", text)
         .put("x", x).put("y", y).put("ms", ms)
         .put("x2", x2).put("y2", y2).put("swipeMs", swipeMs)
@@ -188,6 +196,7 @@ data class Step(
             id = o.optString("id", "").ifEmpty { java.util.UUID.randomUUID().toString() },
             name = o.optString("name", ""),
             targetId = o.optString("targetId", ""),
+            amount = o.optInt("amount", 1),
             text = o.optString("text", ""),
             x = o.optInt("x"),
             y = o.optInt("y"),
@@ -230,6 +239,33 @@ data class Step(
     }
 }
 
+/** A named number a macro can count with. [keep] = it is remembered between runs (and days) instead of starting at 0 each run. */
+data class CounterDef(val name: String, val keep: Boolean = false)
+
+/** When a macro starts by itself: at these times of day (minutes after midnight), on these days (bit 0 = Monday). */
+data class Schedule(
+    val enabled: Boolean = false,
+    val minutes: List<Int> = emptyList(),
+    val days: Int = 127,
+    val durationMin: Int = 0,           // 0 = until it finishes
+) {
+    fun toJson(): JSONObject = JSONObject().put("enabled", enabled).put("days", days).put("durationMin", durationMin)
+        .put("minutes", JSONArray().also { a -> minutes.forEach { a.put(it) } })
+
+    companion object {
+        fun fromJson(o: JSONObject?): Schedule {
+            if (o == null) return Schedule()
+            val a = o.optJSONArray("minutes")
+            return Schedule(
+                enabled = o.optBoolean("enabled", false),
+                minutes = if (a == null) emptyList() else List(a.length()) { a.getInt(it) },
+                days = o.optInt("days", 127),
+                durationMin = o.optInt("durationMin", 0),
+            )
+        }
+    }
+}
+
 data class Macro(
     val id: String,
     val name: String,
@@ -241,7 +277,15 @@ data class Macro(
     val runOnly: Boolean = false,
     val sharedBy: String = "",
     val landscape: Boolean = false,     // the way the phone is held when this macro runs
+    val counters: List<CounterDef> = emptyList(),
+    val watchers: List<Step> = emptyList(),   // WATCH steps, looked at all the time while the macro runs
+    val stuckSec: Int = 0,                    // 0 = off. The screen not changing for this long counts as stuck
+    val stuck: List<Step> = emptyList(),      // what to do when stuck; empty = stop the macro with a message
+    val schedule: Schedule = Schedule(),
 ) {
+    /** Every list of steps in the macro: the main job, the watchers and the stuck rescue. */
+    val lists: List<List<Step>> get() = listOf(steps, watchers, stuck)
+
     fun summary(): String {
         val s = if (steps.size == 1) "1 step" else "${steps.size} steps"
         val r = if (repeat == 1) "runs once" else "repeats $repeat times"
@@ -258,6 +302,11 @@ data class Macro(
         .put("runOnly", runOnly)
         .put("sharedBy", sharedBy)
         .put("landscape", landscape)
+        .put("stuckSec", stuckSec)
+        .put("schedule", schedule.toJson())
+        .put("counters", JSONArray().also { a -> counters.forEach { a.put(JSONObject().put("name", it.name).put("keep", it.keep)) } })
+        .put("watchers", JSONArray().also { a -> watchers.forEach { a.put(it.toJson()) } })
+        .put("stuck", JSONArray().also { a -> stuck.forEach { a.put(it.toJson()) } })
         .put("steps", JSONArray().also { a -> steps.forEach { a.put(it.toJson()) } })
 
     companion object {
@@ -273,6 +322,11 @@ data class Macro(
                 runOnly = o.optBoolean("runOnly", false),
                 sharedBy = o.optString("sharedBy", ""),
                 landscape = o.optBoolean("landscape", false),
+                stuckSec = o.optInt("stuckSec", 0),
+                schedule = Schedule.fromJson(o.optJSONObject("schedule")),
+                counters = o.optJSONArray("counters")?.let { c -> List(c.length()) { CounterDef(c.getJSONObject(it).getString("name"), c.getJSONObject(it).optBoolean("keep", false)) } } ?: emptyList(),
+                watchers = o.optJSONArray("watchers")?.let { w -> List(w.length()) { Step.fromJson(w.getJSONObject(it)) } } ?: emptyList(),
+                stuck = o.optJSONArray("stuck")?.let { w -> List(w.length()) { Step.fromJson(w.getJSONObject(it)) } } ?: emptyList(),
                 steps = List(arr.length()) { Step.fromJson(arr.getJSONObject(it)) },
             )
         }

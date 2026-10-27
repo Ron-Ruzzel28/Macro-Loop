@@ -13,9 +13,11 @@ import java.util.UUID
 object MacroRepository {
     val macros = mutableStateListOf<Macro>()
     private lateinit var file: File
+    private var appContext: Context? = null
 
     fun init(context: Context) {
         if (::file.isInitialized) return
+        appContext = context.applicationContext
         file = File(context.filesDir, "macros.json")
         load()
     }
@@ -54,5 +56,6 @@ object MacroRepository {
         val arr = JSONArray()
         macros.forEach { arr.put(it.toJson()) }
         file.writeText(arr.toString())
+        appContext?.let { runCatching { MacroScheduler.reschedule(it) } }
     }
 }

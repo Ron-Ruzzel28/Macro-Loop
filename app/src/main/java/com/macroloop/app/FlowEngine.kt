@@ -16,6 +16,11 @@ package com.macroloop.app
  *  - a Run step link runs another step of the macro (with its own conditions and branches) and then the
  *    list carries on from the link. A step marked "only when linked" is skipped in the normal order.
  *    A link to a deleted step, or a link that leads back to itself, stops the macro with a clear message.
+ *  - counters: Add / Reset steps change a named number, and a Counter condition looks at it. A counter that is
+ *    "kept" is loaded from the phone at the start of a run and saved each time it changes;
+ *  - watchers: while the macro waits or between steps, about once a second each watcher's conditions are looked
+ *    at once, and when they hold its If true steps run (then the macro goes on where it was);
+ *  - stuck rescue: when the screen has not changed for the set time, the rescue steps run (no steps = stop).
  */
 sealed class Outcome {
     data object Ok : Outcome()
@@ -54,6 +59,17 @@ interface StepHost {
     /** A new look at a step's conditions begins: forget the colours that "changes" conditions compare against. */
     fun resetBaselines() {}
 
+    /** The engine gives the host something to call now and then while the host waits on its own (for a picture). */
+    fun setWaitHook(hook: (suspend () -> Unit)?) {}
+
+    /** Has the screen changed since the last time this was asked? Null when it cannot be told. */
+    suspend fun screenChanged(): Boolean? = null
+
+    /** A counter that is kept between runs. */
+    fun counterLoad(macroId: String, name: String): Int = 0
+
+    fun counterSave(macroId: String, name: String, value: Int) {}
+
     /** A number from 0 to 99, for Random True. */
     fun roll(): Int
 
@@ -66,13 +82,27 @@ class RunState {
     var jumps = 0
     var byId: Map<String, Step> = emptyMap()   // every step of the macro, branches included, by id
     val active = ArrayList<String>()            // linked steps being run right now
+    val counters = HashMap<String, Int>()
+    var keep: Set<String> = emptySet()          // names of counters kept between runs
+    var macro: Macro? = null
+    var inGuard = false                         // a watcher or the stuck rescue is running right now
+    var lastGuardAt = -1_000_000L
+    val firedAt = HashMap<String, Long>()       // when each watcher last ran its steps
+    var lastChangeAt = 0L                       // when the screen last changed
+    var rescues = 0                             // stuck rescues in a row, with no change in between
 }
+
+/** Thrown from inside a watcher or rescue to end whatever is waiting and carry out a Stop or Go to. */
+private class FlowSignal(val flow: Flow) : RuntimeException(null, null, false, false)
 
 private class StepResult(val flow: Flow, val worked: Boolean)
 
 class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
     private companion object {
         const val MAX_LINK_DEPTH = 20
+        const val GUARD_EVERY_MS = 1000L
+        const val WATCH_COOLDOWN_MS = 1500L
+        const val MAX_RESCUES = 5
     }
 
 
@@ -84,14 +114,32 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
     suspend fun run(macro: Macro, startList: List<Step>? = null, rounds: Int = macro.repeat): String? {
         val state = RunState()
         val root = macro.steps
-        state.byId = collect(root)
+        state.macro = macro
+        state.byId = collect(root + macro.watchers + macro.stuck)
+        state.keep = macro.counters.filter { it.keep }.map { it.name }.toSet()
+        for (name in state.keep) state.counters[name] = host.counterLoad(macro.id, name)
+        state.lastChangeAt = host.now()
+        host.setWaitHook { guards(state, stuckToo = true) }
+        try {
+            return runRounds(macro, startList, rounds, state, root)
+        } finally {
+            host.setWaitHook(null)
+        }
+    }
+
+    private suspend fun runRounds(macro: Macro, startList: List<Step>?, rounds: Int, state: RunState, root: List<Step>): String? {
         for (round in 1..rounds) {
             var cur: List<Step> = startList ?: root
             var i = 0
             var prevOk = true
             while (i < cur.size) {
                 host.status("${macro.name}\nRound $round of $rounds, step ${i + 1} of ${cur.size}")
-                val r = runStep(macro.name, (i + 1).toString(), cur[i], prevOk, state)
+                val r = try {
+                    guards(state, stuckToo = true)
+                    runStep(macro.name, (i + 1).toString(), cur[i], prevOk, state)
+                } catch (e: FlowSignal) {
+                    StepResult(e.flow, false)
+                }
                 prevOk = r.worked
                 when (val f = r.flow) {
                     Flow.Next -> i++
@@ -162,9 +210,18 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         when (step.type) {
             StepType.LINK -> return runLink(macroName, where, step, prevOk, state)
             StepType.WAIT -> {
-                host.pause(host.humanWait(step.ms))
+                waitWatching(host.humanWait(step.ms), state)
                 return StepResult(Flow.Next, true)
             }
+            StepType.COUNTER_ADD, StepType.COUNTER_RESET -> {
+                val name = step.text
+                if (name.isBlank()) return StepResult(Flow.Stop("Stopped: the counter step $where has no counter chosen. Edit it and pick one."), false)
+                val v = if (step.type == StepType.COUNTER_RESET) 0 else (state.counters[name] ?: 0) + step.amount
+                state.counters[name] = v
+                if (name in state.keep) state.macro?.let { host.counterSave(it.id, name, v) }
+                return StepResult(Flow.Next, true)
+            }
+            StepType.WATCH -> return StepResult(Flow.Next, prevOk)
             StepType.STOP_MACRO -> return StepResult(Flow.Stop("Stopped by a Stop step ($where)."), true)
             StepType.GOTO -> return StepResult(
                 if (step.targetId.isEmpty()) Flow.Stop("Stopped: the Go to step $where has no target. Edit it and choose one.")
@@ -173,7 +230,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
             )
             else -> Unit
         }
-        if (step.delayMs > 0) host.pause(step.delayMs)
+        if (step.delayMs > 0) waitWatching(step.delayMs, state)
 
         var outcome: Outcome = Outcome.Ok
         if (step.conditions.isNotEmpty()) outcome = waitConditions(step, where, prevOk, state)
@@ -187,7 +244,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         return when (val o = outcome) {
             Outcome.Ok -> {
                 val after = step.waitNextMs
-                if (after > 0) host.pause(host.humanWait(after))
+                if (after > 0) waitWatching(host.humanWait(after), state)
                 val flow = if (step.onSuccess.isNotEmpty()) runList(macroName, step.onSuccess, "$where on success", state) else Flow.Next
                 StepResult(flow, true)
             }
@@ -198,6 +255,88 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                 else -> StepResult(Flow.Stop(o.message), false)
             }
         }
+    }
+
+    /** Waits, in short pieces, so the watchers can look at the screen while it waits. Stuck is not checked: waiting is on purpose. */
+    private suspend fun waitWatching(ms: Long, state: RunState) {
+        if (state.macro?.watchers.isNullOrEmpty() || ms < 1200) {
+            host.pause(ms)
+            return
+        }
+        val end = host.now() + ms
+        while (true) {
+            val left = end - host.now()
+            if (left <= 0) break
+            host.pause(minOf(left, 700))
+            guards(state, stuckToo = false)
+        }
+        state.lastChangeAt = host.now()
+    }
+
+    /**
+     * Looks at the watchers (and the stuck timer) if a second has passed since the last look.
+     * A watcher whose conditions hold runs its If true steps. A Stop or Go to inside them ends the wait, via [FlowSignal].
+     */
+    private suspend fun guards(state: RunState, stuckToo: Boolean) {
+        val m = state.macro ?: return
+        if (state.inGuard) return
+        val now = host.now()
+        if (now - state.lastGuardAt < GUARD_EVERY_MS) return
+        state.lastGuardAt = now
+        state.inGuard = true
+        try {
+            for ((n, w) in m.watchers.withIndex()) {
+                if (!w.enabled || w.type != StepType.WATCH) continue
+                val last = state.firedAt[w.id]
+                if (last != null && host.now() - last < WATCH_COOLDOWN_MS) continue
+                val conds = w.conditions.filter { it.enabled }
+                if (conds.isEmpty()) continue
+                if (!conditionsHold(w, conds, state)) continue
+                state.firedAt[w.id] = host.now()
+                val f = runList(m.name, w.onSuccess, "watcher ${n + 1}", state)
+                state.firedAt[w.id] = host.now()
+                if (f !is Flow.Next) throw FlowSignal(f)
+                state.lastChangeAt = host.now()
+            }
+            if (stuckToo && m.stuckSec > 0) checkStuck(m, state)
+        } finally {
+            state.inGuard = false
+        }
+    }
+
+    private suspend fun checkStuck(m: Macro, state: RunState) {
+        val changed = host.screenChanged()
+        if (changed == true) {
+            state.lastChangeAt = host.now()
+            state.rescues = 0
+            return
+        }
+        if (changed == null) return
+        if (host.now() - state.lastChangeAt < m.stuckSec * 1000L) return
+        if (m.stuck.isEmpty()) throw FlowSignal(Flow.Stop("Stopped: the screen did not change for ${m.stuckSec} s (stuck)."))
+        if (++state.rescues > MAX_RESCUES) throw FlowSignal(Flow.Stop("Stopped: still stuck after $MAX_RESCUES rescue tries."))
+        val f = runList(m.name, m.stuck, "stuck rescue", state)
+        state.lastChangeAt = host.now()
+        if (f !is Flow.Next) throw FlowSignal(f)
+    }
+
+    /** One look at a list of conditions, with no waiting. */
+    private suspend fun conditionsHold(step: Step, conds: List<Condition>, state: RunState): Boolean {
+        host.resetBaselines()
+        var holds = 0
+        for ((k, c) in conds.withIndex()) {
+            val ok = when (c.kind) {
+                ConditionKind.IMAGE, ConditionKind.COLOR, ConditionKind.TEXT -> host.imageHolds(c).holds
+                ConditionKind.COUNTER -> (state.counters[c.text] ?: 0).let { v -> if (c.mustAppear) v >= c.percent else v < c.percent }
+                ConditionKind.RANDOM -> host.roll() < c.percent
+                ConditionKind.ONCE -> (step.id + "#" + k) !in state.onceUsed
+                ConditionKind.ACTION_RESULT -> false
+            }
+            if (ok) holds++
+        }
+        val pass = if (step.anyOf) holds > 0 else holds == conds.size
+        if (pass) conds.forEachIndexed { k, c -> if (c.kind == ConditionKind.ONCE) state.onceUsed.add(step.id + "#" + k) }
+        return pass
     }
 
     /** Waits until the step's conditions hold. Only picture conditions can change while waiting. */
@@ -225,6 +364,11 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                         ok = rolls[k] < c.percent
                         note = "the ${c.percent}% chance did not come up"
                     }
+                    ConditionKind.COUNTER -> {
+                        val v = state.counters[c.text] ?: 0
+                        ok = if (c.mustAppear) v >= c.percent else v < c.percent
+                        note = "counter ${c.text} is $v, " + (if (c.mustAppear) "it needs to be at least ${c.percent}" else "it needs to be below ${c.percent}")
+                    }
                     ConditionKind.ONCE -> {
                         ok = (step.id + "#" + k) !in state.onceUsed
                         note = "it already ran once"
@@ -242,6 +386,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
             if (host.now() - started >= step.timeoutMs) break
             host.status("Step $where: waiting\n$why")
             host.pause(150)
+            guards(state, stuckToo = true)
         }
         return Outcome.Missing("Stopped: step $where waited ${step.timeoutMs / 1000} s, but $why.")
     }

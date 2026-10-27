@@ -15,6 +15,9 @@ object LogicTest {
         val images = HashMap<String, Boolean>()       // a picture condition's fixed answer, by its label
         var clock = 0L
         var dice = 0
+        var screen: (() -> Boolean?)? = null          // answers "did the screen change", when a test needs it
+        val loaded = HashMap<String, Int>()           // kept counters at the start of the run
+        val saved = HashMap<String, Int>()            // kept counters as they were saved
 
         override suspend fun perform(step: Step, where: String): Outcome {
             ran.add(step.name.ifEmpty { step.describe() })
@@ -32,6 +35,9 @@ object LogicTest {
         override fun status(text: String) = Unit
         override fun roll() = dice
         override fun humanWait(ms: Long) = ms
+        override suspend fun screenChanged(): Boolean? = screen?.invoke()
+        override fun counterLoad(macroId: String, name: String) = loaded[name] ?: 0
+        override fun counterSave(macroId: String, name: String, value: Int) { saved[name] = value }
     }
 
     private fun step(name: String, type: StepType = StepType.CLICK, f: (Step) -> Step = { it }) =
@@ -291,6 +297,120 @@ object LogicTest {
                 step("c") { it.copy(conditions = listOf(Condition(kind = ConditionKind.ACTION_RESULT, resultOk = false))) },
                 step("x") { it.copy(linkedOnly = true, onFail = listOf(step("xf"))) },
             )
+        }
+
+        // ---- counters, watchers, stuck rescue
+        suspend fun custom(name: String, setup: (Host) -> Unit = {}, m: Macro, ok: (Host, String?) -> Boolean) {
+            val h = Host()
+            setup(h)
+            val end = FlowEngine(h).run(m, null, 1)
+            cases += Case(name, ok(h, end), "ran ${h.ran}, ended ${end ?: "normally"}, saved ${h.saved}")
+        }
+
+        fun add(name: String, counter: String, amount: Int = 1) =
+            step(name, StepType.COUNTER_ADD) { it.copy(text = counter, amount = amount) }
+
+        fun atLeast(counter: String, n: Int, yes: Boolean = true) =
+            Condition(kind = ConditionKind.COUNTER, text = counter, percent = n, mustAppear = yes)
+
+        custom("A counter counts up, and 'at least' lets a step run", m = macro(add("a1", "n"), add("a2", "n"), add("a3", "n"),
+            step("done") { it.copy(conditions = listOf(atLeast("n", 3))) })) { h, e -> h.ran == listOf("done") && e == null }
+
+        custom("A counter below its number stops the step with a clear reason", m = macro(add("a1", "n"), add("a2", "n"),
+            step("done") { it.copy(conditions = listOf(atLeast("n", 3))) })) { h, e -> h.ran.isEmpty() && e != null && e.contains("counter n is 2") }
+
+        custom("'Below' is true while the counter is smaller", m = macro(add("a1", "n"),
+            step("early") { it.copy(conditions = listOf(atLeast("n", 3, yes = false))) })) { h, e -> h.ran == listOf("early") && e == null }
+
+        custom("Reset sets a counter back to 0", m = macro(add("a1", "n", 5), step("r", StepType.COUNTER_RESET) { it.copy(text = "n") },
+            step("done") { it.copy(conditions = listOf(atLeast("n", 1))) })) { h, e -> h.ran.isEmpty() && e != null }
+
+        custom("A counter step with no counter chosen stops", m = macro(step("c", StepType.COUNTER_ADD))) { _, e -> e != null && e.contains("no counter chosen") }
+
+        custom("A kept counter starts from the saved number and is saved again",
+            setup = { it.loaded["n"] = 5 },
+            m = macro(add("a1", "n", 2), step("done") { it.copy(conditions = listOf(atLeast("n", 7))) }).copy(counters = listOf(CounterDef("n", keep = true)))) { h, e ->
+            h.ran == listOf("done") && e == null && h.saved["n"] == 7
+        }
+
+        custom("A counter that is not kept starts at 0 and is not saved",
+            setup = { it.loaded["n"] = 5 },
+            m = macro(add("a1", "n"), step("done") { it.copy(conditions = listOf(atLeast("n", 2))) })) { h, e -> h.ran.isEmpty() && e != null && h.saved.isEmpty() }
+
+        val popup = Condition(label = "popup")
+        val closeIt = step("w1", StepType.WATCH) { it.copy(conditions = listOf(popup), onSuccess = listOf(step("close"))) }
+
+        custom("A watcher closes a popup while a step waits, and the step then goes on",
+            setup = { it.images["popup"] = true; it.imageFlipAt["p"] = 4000 },
+            m = macro(step("a") { it.copy(conditions = listOf(Condition(label = "p")), timeoutMs = 10_000) }).copy(watchers = listOf(closeIt))) { h, e ->
+            h.ran.count { it == "close" } >= 1 && h.ran.last() == "a" && e == null
+        }
+
+        custom("A watcher that does not see its picture does nothing",
+            setup = { it.images["popup"] = false },
+            m = macro(step("a"), step("b")).copy(watchers = listOf(closeIt))) { h, e -> h.ran == listOf("a", "b") && e == null }
+
+        custom("A turned-off watcher does nothing",
+            setup = { it.images["popup"] = true },
+            m = macro(step("a"), step("w", StepType.WAIT) { it.copy(ms = 3000) }, step("b")).copy(watchers = listOf(closeIt.copy(enabled = false)))) { h, e ->
+            h.ran == listOf("a", "b") && e == null
+        }
+
+        custom("A watcher also looks during a long Wait step",
+            setup = { it.images["popup"] = true },
+            m = macro(step("w", StepType.WAIT) { it.copy(ms = 5000) }, step("b")).copy(watchers = listOf(closeIt))) { h, e ->
+            h.ran.count { it == "close" } >= 2 && h.ran.last() == "b" && e == null
+        }
+
+        custom("A Stop inside a watcher ends the macro",
+            setup = { it.images["popup"] = true; it.imageFlipAt["p"] = 9000 },
+            m = macro(step("a") { it.copy(conditions = listOf(Condition(label = "p")), timeoutMs = 20_000) })
+                .copy(watchers = listOf(closeIt.copy(onSuccess = listOf(step("s", StepType.STOP_MACRO)))))) { h, e ->
+            h.ran.isEmpty() && e != null && e.contains("Stop step")
+        }
+
+        custom("A Go to inside a watcher jumps the main list",
+            setup = { it.images["popup"] = true; it.imageFlipAt["p"] = 99_000 },
+            m = macro(step("a") { it.copy(conditions = listOf(Condition(label = "p")), timeoutMs = 20_000, skipIfMissing = true) }, step("skipped"), step("end"))
+                .copy(watchers = listOf(closeIt.copy(onSuccess = listOf(step("g", StepType.GOTO) { it.copy(targetId = "end") }))))) { h, e ->
+            h.ran == listOf("end") && e == null
+        }
+
+        custom("A watcher with a counter condition fires when the counter is high enough",
+            m = macro(add("a1", "n", 3), step("w", StepType.WAIT) { it.copy(ms = 2500) }, step("b"))
+                .copy(watchers = listOf(step("w1", StepType.WATCH) { it.copy(conditions = listOf(atLeast("n", 3)), onSuccess = listOf(step("reward"))) }))) { h, e ->
+            h.ran.contains("reward") && h.ran.last() == "b" && e == null
+        }
+
+        val never = Condition(label = "never")
+        custom("A frozen screen with no rescue steps stops the macro",
+            setup = { it.screen = { false } },
+            m = macro(step("a") { it.copy(conditions = listOf(never), timeoutMs = 60_000) }).copy(stuckSec = 10)) { _, e ->
+            e != null && e.contains("did not change for 10 s")
+        }
+
+        custom("A frozen screen runs the rescue steps, then stops after too many tries",
+            setup = { it.screen = { false } },
+            m = macro(step("a") { it.copy(conditions = listOf(never), timeoutMs = 600_000) }).copy(stuckSec = 10, stuck = listOf(step("rescue")))) { h, e ->
+            h.ran.count { it == "rescue" } == 5 && e != null && e.contains("still stuck")
+        }
+
+        custom("A screen that keeps changing is never stuck",
+            setup = { it.screen = { true }; it.imageFlipAt["p"] = 30_000 },
+            m = macro(step("a") { it.copy(conditions = listOf(Condition(label = "p")), timeoutMs = 60_000) }).copy(stuckSec = 10, stuck = listOf(step("rescue")))) { h, e ->
+            h.ran == listOf("a") && e == null
+        }
+
+        custom("A screen that cannot be read is not called stuck",
+            setup = { it.screen = { null }; it.imageFlipAt["p"] = 30_000 },
+            m = macro(step("a") { it.copy(conditions = listOf(Condition(label = "p")), timeoutMs = 60_000) }).copy(stuckSec = 10)) { h, e ->
+            h.ran == listOf("a") && e == null
+        }
+
+        custom("Stuck check off (0) never rescues",
+            setup = { it.screen = { false }; it.imageFlipAt["p"] = 30_000 },
+            m = macro(step("a") { it.copy(conditions = listOf(Condition(label = "p")), timeoutMs = 60_000) }).copy(stuck = listOf(step("rescue")))) { h, e ->
+            h.ran == listOf("a") && e == null
         }
 
         val passed = cases.count { it.ok }

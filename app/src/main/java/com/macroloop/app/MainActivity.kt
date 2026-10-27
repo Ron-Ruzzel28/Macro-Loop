@@ -79,7 +79,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private enum class Screen { HOME, SETUP, DEBUG, INFO, ACCOUNT }
+private enum class Screen { HOME, SETUP, DEBUG, INFO, ACCOUNT, RUNLOG }
 
 class MainActivity : ComponentActivity() {
 
@@ -212,6 +212,7 @@ class MainActivity : ComponentActivity() {
         MacroRepository.init(applicationContext)
         TemplateStore.init(applicationContext)
         License.init(applicationContext)
+        RunLog.init(applicationContext)
         setContent { MacroLoopTheme { App() } }
         if (savedInstanceState == null) handleIntent(intent)
     }
@@ -219,6 +220,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        MacroScheduler.reschedule(applicationContext)
         // The first check, which starts the trial, waits until the person has been asked for their name.
         if (License.hasAskedName(this)) {
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { License.checkIn(applicationContext) }
@@ -243,11 +245,16 @@ class MainActivity : ComponentActivity() {
                 onDebug = { screen = Screen.DEBUG },
                 onInfo = { infoId = it; screen = Screen.INFO },
                 onAccount = { screen = Screen.ACCOUNT },
+                onLog = { screen = Screen.RUNLOG },
             )
             Screen.INFO -> InfoScreen(infoId) { screen = Screen.HOME }
             Screen.ACCOUNT -> {
                 BackHandler { screen = Screen.HOME }
                 AccountScreen(onBack = { screen = Screen.HOME })
+            }
+            Screen.RUNLOG -> {
+                BackHandler { screen = Screen.HOME }
+                RunLogScreen(onBack = { screen = Screen.HOME })
             }
             Screen.DEBUG -> {
                 BackHandler { screen = Screen.HOME }
@@ -277,7 +284,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun HomeScreen(onSetup: () -> Unit, onDebug: () -> Unit, onInfo: (String) -> Unit, onAccount: () -> Unit) {
+    private fun HomeScreen(onSetup: () -> Unit, onDebug: () -> Unit, onInfo: (String) -> Unit, onAccount: () -> Unit, onLog: () -> Unit) {
         var showNew by remember { mutableStateOf(false) }
         var menuOpen by remember { mutableStateOf(false) }
         val homeCtx = LocalContext.current
@@ -290,6 +297,7 @@ class MainActivity : ComponentActivity() {
                     Text("⋮", fontSize = 24.sp, color = Tokens.onPrimary, modifier = Modifier.clickable { menuOpen = true }.padding(12.dp))
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(text = { Text("My access") }, onClick = { menuOpen = false; onAccount() })
+                        DropdownMenuItem(text = { Text("Run history") }, onClick = { menuOpen = false; onLog() })
                         DropdownMenuItem(text = { Text("Import a macro file") }, onClick = { menuOpen = false; importPicker.launch(arrayOf("*/*")) })
                         DropdownMenuItem(text = { Text("Set up and permissions") }, onClick = { menuOpen = false; onSetup() })
                         DropdownMenuItem(text = { Text("Picture test (advanced)") }, onClick = { menuOpen = false; onDebug() })
@@ -474,6 +482,7 @@ class MainActivity : ComponentActivity() {
                             fontSize = 13.sp, color = Tokens.textMuted,
                         )
                         if (m.landscape) Text("Landscape", fontSize = 13.sp, color = Tokens.textMuted)
+                        MacroScheduler.describe(m)?.let { Text("Starts by itself: $it", fontSize = 13.sp, color = Tokens.primary) }
                         if (m.runOnly) Text(
                             "Run only" + if (m.sharedBy.isNotBlank()) " · from ${m.sharedBy}" else "",
                             fontSize = 13.sp, color = Tokens.warning,
@@ -777,7 +786,8 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SetupScreen(onBack: () -> Unit) {
-        Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 16.dp)) {
+        var guide by remember { mutableStateOf(false) }
+        Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
             Spacer(Modifier.height(12.dp))
             Text("Set up", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Tokens.text)
             Text(
@@ -792,6 +802,12 @@ class MainActivity : ComponentActivity() {
                 ok = accessibilityOn,
                 action = "Open accessibility settings",
             ) { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            if (!accessibilityOn) {
+                TextButton(onClick = { guide = !guide }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(if (guide) "Hide the steps" else "Switch is grey, or says \"Restricted setting\"? Show me how", color = Tokens.primary, fontSize = 15.sp)
+                }
+                if (guide) RestrictedGuide()
+            }
             Spacer(Modifier.height(12.dp))
             SetupRow(
                 title = "Don't let the battery saver stop it",
@@ -817,6 +833,95 @@ class MainActivity : ComponentActivity() {
             }
             Spacer(Modifier.height(16.dp))
             SecondaryButton("Back to my macros", Modifier.fillMaxWidth()) { onBack() }
+        }
+    }
+
+    /** Step by step for the "Restricted setting" block Android puts on apps that were not installed from the Play Store. */
+    @Composable
+    private fun RestrictedGuide() {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Tokens.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Android blocks apps that came from a file", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Tokens.text)
+                Text(
+                    "This is normal for an app that is not from the Play Store. Do these in order:",
+                    fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
+                )
+                val steps = listOf(
+                    "Tap \"Open accessibility settings\" above, find MacroLoop under Downloaded apps (or Installed apps) and tap it once. A message says it is restricted. This makes the option appear in the next step.",
+                    "Tap \"Open MacroLoop's App info\" below.",
+                    "Tap the three dots at the top right, then \"Allow restricted settings\". Confirm with your PIN or fingerprint if asked.",
+                    "Close Settings completely: open the recent apps screen and swipe Settings away.",
+                    "Come back here, tap \"Open accessibility settings\" again, tap MacroLoop and switch it On.",
+                    "Still grey? Restart the phone, then repeat step 5.",
+                )
+                steps.forEachIndexed { i, t ->
+                    Row(Modifier.padding(vertical = 3.dp)) {
+                        Text("${i + 1}.", fontSize = 15.sp, color = Tokens.primary, fontWeight = FontWeight.Bold, modifier = Modifier.width(26.dp))
+                        Text(t, fontSize = 15.sp, color = Tokens.text)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton("Open MacroLoop's App info", Modifier.fillMaxWidth()) {
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun RunLogScreen(onBack: () -> Unit) {
+        var open by remember { mutableStateOf(-1L) }
+        val fmt = remember { java.text.SimpleDateFormat("EEE d MMM, HH:mm", java.util.Locale.getDefault()) }
+        Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 16.dp)) {
+            Spacer(Modifier.height(12.dp))
+            Text("Run history", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Tokens.text)
+            Text(
+                "The last ${RunLog.KEEP} runs. When a run stops with a problem, a picture of the screen at that moment is kept. Tap a run to see it.",
+                fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+            )
+            if (RunLog.entries.isEmpty()) {
+                Text("Nothing yet. Runs appear here after you press Play.", fontSize = 16.sp, color = Tokens.textMuted)
+            }
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(RunLog.entries.toList(), key = { it.time }) { e ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Tokens.surface),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().clickable { open = if (open == e.time) -1L else e.time },
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("${e.macro}  ·  ${fmt.format(java.util.Date(e.time))}", fontSize = 15.sp, color = Tokens.text, fontWeight = FontWeight.SemiBold)
+                            Text(e.result, fontSize = 14.sp, color = if (e.problem) Tokens.danger else Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
+                            Text("${e.seconds} s", fontSize = 12.sp, color = Tokens.textMuted)
+                            if (open == e.time) {
+                                val shot = remember(e.shot) {
+                                    RunLog.shotFile(e)?.let { f -> android.graphics.BitmapFactory.decodeFile(f.path)?.asImageBitmap() }
+                                }
+                                if (shot != null) {
+                                    Text("The screen when it stopped:", fontSize = 12.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 8.dp))
+                                    Image(bitmap = shot, contentDescription = "The screen when the run stopped", contentScale = ContentScale.Fit,
+                                        modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp).padding(top = 4.dp))
+                                } else if (e.problem) {
+                                    Text("No picture was kept (screen capture was off).", fontSize = 12.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 6.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth()) {
+                SecondaryButton("Back to my macros", Modifier.weight(1f)) { onBack() }
+                if (RunLog.entries.isNotEmpty()) {
+                    Spacer(Modifier.width(8.dp))
+                    SecondaryButton("Clear", Modifier) { RunLog.clear() }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
         }
     }
 

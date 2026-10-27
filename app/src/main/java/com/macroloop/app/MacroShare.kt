@@ -169,8 +169,8 @@ object MacroShare {
         val answer = License.createShare(ctx, macro.name, runOnly)
         if (!answer.ok) return Outcome(false, answer.error)
         val pictures = HashMap<String, ByteArray>()
-        for (id in pictureIds(macro.steps)) TemplateStore.loadBytes(id)?.let { pictures[id] = it }
-        val bytes = seal(macro.copy(runOnly = false, sharedBy = ""), pictures, answer.key, answer.shareId)
+        for (id in pictureIds(macro.lists.flatten())) TemplateStore.loadBytes(id)?.let { pictures[id] = it }
+        val bytes = seal(macro.copy(runOnly = false, sharedBy = "", schedule = Schedule()), pictures, answer.key, answer.shareId)
         val dir = File(ctx.cacheDir, "shared").also { it.mkdirs() }
         dir.listFiles()?.forEach { it.delete() }
         val file = File(dir, safeFileName(macro.name) + ".mlm")
@@ -191,6 +191,7 @@ object MacroShare {
             runOnly = answer.runOnly,
             sharedBy = answer.fromName.ifBlank { "the owner" },
             updatedAt = System.currentTimeMillis(),
+            schedule = Schedule(),
         )
         MacroRepository.save(imported)
         return Outcome(true, "Added \"${imported.name}\"" + if (answer.runOnly) " (run only)." else ".", macro = imported)

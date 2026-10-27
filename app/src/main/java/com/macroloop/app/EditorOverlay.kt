@@ -58,7 +58,27 @@ class EditorOverlay(
     private val repeat = macro.repeat
     private val game = macro.game
     private val version = macro.version
-    private var root: List<Step> = macro.steps
+    private val base = macro
+    private var mainSteps: List<Step> = macro.steps
+    private var watchers: List<Step> = macro.watchers
+    private var stuck: List<Step> = macro.stuck
+    private var counters: List<CounterDef> = macro.counters
+    private var stuckSec = macro.stuckSec
+    private var schedule = macro.schedule
+    private var section = 0          // which list the panel shows: 0 = Main Job, 1 = Watchers, 2 = Stuck rescue
+
+    /** The list being edited right now. */
+    private var root: List<Step>
+        get() = when (section) { 0 -> mainSteps; 1 -> watchers; else -> stuck }
+        set(v) { when (section) { 0 -> mainSteps = v; 1 -> watchers = v; else -> stuck = v } }
+
+    private fun current(): Macro = base.copy(
+        steps = mainSteps, watchers = watchers, stuck = stuck, counters = counters, stuckSec = stuckSec, schedule = schedule,
+    )
+
+    private fun everyStep(): List<Step> = flat(mainSteps) + flat(watchers) + flat(stuck)
+
+    private fun later(f: () -> Unit) { android.os.Handler(android.os.Looper.getMainLooper()).post { f() } }
     private var dirty = false
     private var clipboard: Step? = null
 
@@ -114,7 +134,7 @@ class EditorOverlay(
 
     private fun count(list: List<Step>): Int = flat(list).size
 
-    private fun findStep(id: String): Step? = if (id.isEmpty()) null else flat(root).firstOrNull { it.id == id }
+    private fun findStep(id: String): Step? = if (id.isEmpty()) null else everyStep().firstOrNull { it.id == id }
 
     /** Every step with its number, branches included: "2", "2.1", "2.2"... */
     private fun flatLabeled(list: List<Step>, prefix: String = ""): List<Pair<String, Step>> {
@@ -129,12 +149,12 @@ class EditorOverlay(
     }
 
     /** How many Run step and Go to steps point at this step. */
-    private fun linksTo(id: String): Int = flat(root).count { (it.type == StepType.LINK || it.type == StepType.GOTO) && it.targetId == id }
+    private fun linksTo(id: String): Int = everyStep().count { (it.type == StepType.LINK || it.type == StepType.GOTO) && it.targetId == id }
 
     private fun linkName(s: Step): String {
         if (s.targetId.isEmpty()) return "pick a step"
         val t = findStep(s.targetId) ?: return "BROKEN LINK (the step was deleted)"
-        val n = flatLabeled(root).firstOrNull { it.second.id == t.id }?.first
+        val n = flatLabeled(mainSteps).firstOrNull { it.second.id == t.id }?.first
         return (if (n != null) "$n  " else "") + stepTitle(t)
     }
 
@@ -326,17 +346,30 @@ class EditorOverlay(
             ellipsize = TextUtils.TruncateAt.END
         })
         val n = count(root)
-        titleCol.addView(label((if (n == 1) "1 step" else "$n steps") + (if (dirty) "  (not saved)" else ""), 11f, TokenInts.textMuted))
+        val secName = listOf("Main Job", "Watchers", "Stuck rescue")[section]
+        titleCol.addView(label("$secName ▾   " + (if (n == 1) "1 step" else "$n steps") + (if (dirty) "  (not saved)" else ""), 11f, TokenInts.primary))
+        titleCol.isClickable = true
+        titleCol.setOnClickListener { openMacroMenu() }
         head.addView(titleCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10); marginEnd = dp(6) })
         head.addView(IconBtn(ctx, Icon.PLAY, TokenInts.success) {
             showMenu("Test", listOf(Row("Run Test: From beginning", icon = Icon.PLAY) { closeMenu(); runTest(0, Ref(emptyList(), 0)) }), anchor = (screenW - dp(250)) to dp(90))
         }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(6) })
-        head.addView(IconBtn(ctx, Icon.PLUS) { openActionPicker(Target(emptyList())) }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        head.addView(IconBtn(ctx, Icon.PLUS) { if (section == 1) addWatcher() else openActionPicker(Target(emptyList())) }, LinearLayout.LayoutParams(dp(44), dp(44)))
         rootView.addView(head)
 
         val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        when (section) {
+            1 -> body.addView(label("Watchers look at the screen about once a second while the macro runs. When all of a watcher's conditions hold, its If true steps run (for example, close a popup) and the macro carries on where it was.", 12f, TokenInts.textMuted), lp(4))
+            2 -> body.addView(label(
+                (if (stuckSec > 0) "Stuck check is ON: if the screen does not change for $stuckSec s, these steps run. " else "Stuck check is OFF (turn it on from the title menu). ") +
+                    "With no steps here, the macro stops with a message instead.", 12f, TokenInts.textMuted), lp(4))
+        }
         if (root.isEmpty()) {
-            body.addView(label("No steps yet. Tap + to add the first one.", 14f, TokenInts.textMuted), lp(16))
+            body.addView(label(when (section) {
+                1 -> "No watchers yet. Tap + to add one."
+                2 -> "No rescue steps. Tap + to add what should happen when the macro is stuck."
+                else -> "No steps yet. Tap + to add the first one."
+            }, 14f, TokenInts.textMuted), lp(16))
         } else {
             renderSteps(body, root, emptyList(), "")
         }
@@ -396,11 +429,11 @@ class EditorOverlay(
     private fun clickStyleCode(s: Step): String = "X${s.clicks}" + (if (s.holdMs > 0 || s.holdUntil != null) "H" else "") + (if (s.twoFingers) " 2F" else "")
 
     private fun targetName(s: Step): String {
-        val k = root.indexOfFirst { it.id == s.targetId }
+        val k = mainSteps.indexOfFirst { it.id == s.targetId }
         return when {
             s.targetId.isEmpty() -> "pick a step"
             k < 0 -> "the step was deleted"
-            else -> "step ${k + 1}  ${stepTitle(root[k])}"
+            else -> "step ${k + 1}  ${stepTitle(mainSteps[k])}"
         }
     }
 
@@ -464,6 +497,8 @@ class EditorOverlay(
             StepType.TOAST -> parts.add("\"${s.text.ifBlank { "..." }}\"")
             StepType.OPEN_APP -> parts.add(appLabel(s.text))
             StepType.WAIT, StepType.STOP_MACRO -> Unit
+            StepType.COUNTER_ADD, StepType.COUNTER_RESET -> parts.add("[counter ${s.text.ifBlank { "not chosen" }}]")
+            StepType.WATCH -> parts.add(if (s.conditions.isEmpty()) "[add a condition]" else "[looks about once a second]")
             else -> parts.add("[Delay ${s.delayMs}ms/${s.waitNextMs}ms]")
         }
         if (s.linkedOnly) parts.add("[Runs only when linked]")
@@ -483,6 +518,9 @@ class EditorOverlay(
         StepType.LINK -> "↪"
         StepType.TOAST -> "✎"
         StepType.OPEN_APP -> "▶"
+        StepType.COUNTER_ADD -> "+"
+        StepType.COUNTER_RESET -> "0"
+        StepType.WATCH -> "◉"
         else -> "◆"
     }
 
@@ -541,6 +579,7 @@ class EditorOverlay(
         ConditionKind.COLOR -> colorContent(c) to (if (c.changes) "[Area colour]" else if (c.wholeScreen) "[Whole Screen]" else "[Captured Location]")
         ConditionKind.TEXT -> label("Text \"${c.text}\"  [${if (c.mustAppear) "Appears" else "Not appear"}]", 13f, TokenInts.text) to
             (if (c.wholeScreen) "[Whole Screen]" else "[Captured Location]")
+        ConditionKind.COUNTER -> label("Counter ${c.text}  [${if (c.mustAppear) "at least" else "below"} ${c.percent}]", 13f, TokenInts.text) to null
     }.let { (v, second) ->
         if (c.enabled) v to second else { v.alpha = 0.4f; v to "[Off]" + (second?.let { "  $it" } ?: "") }
     }
@@ -938,6 +977,14 @@ class EditorOverlay(
                 Triple(Icon.CLOSE, "Lock Screen", pick(StepType.LOCK_SCREEN)),
             ),
         )
+        sectionTitle(body, "Counter")
+        gridRows(
+            body,
+            listOf(
+                Triple(Icon.PLUS, "Add to Counter", pick(StepType.COUNTER_ADD)),
+                Triple(Icon.REDO, "Reset Counter", pick(StepType.COUNTER_RESET)),
+            ),
+        )
         sectionTitle(body, "Macro")
         gridRows(
             body,
@@ -999,6 +1046,12 @@ class EditorOverlay(
             StepType.OPEN_APP -> openAppPicker { pkg -> finishAdd(target, Step(StepType.OPEN_APP, text = pkg)) }
             StepType.GOTO -> openLinkPicker { t -> finishAdd(target, Step(StepType.GOTO, targetId = t.id)) }
             StepType.LINK -> openStepPicker("Run Step", null) { t -> finishAdd(target, Step(StepType.LINK, targetId = t.id)); askLinkedOnly(t) }
+            StepType.COUNTER_ADD -> pickCounter("Add to which counter?") { name ->
+                var f: EditText? = null
+                showForm("Add to $name", "How much to add each time. A minus number takes away.", { b -> f = field(b, "Amount", "1", signed = true) },
+                    { finishAdd(target, Step(StepType.COUNTER_ADD, text = name, amount = f?.text.toString().toIntOrNull() ?: 1)) })
+            }
+            StepType.COUNTER_RESET -> pickCounter("Reset which counter?") { name -> finishAdd(target, Step(StepType.COUNTER_RESET, text = name)) }
             else -> finishAdd(target, Step(kind))
         }
     }
@@ -1007,11 +1060,11 @@ class EditorOverlay(
 
     private fun openLinkPicker(onPick: (Step) -> Unit) {
         val rows = ArrayList<Row>()
-        rows.add(Row("Pick the step the macro should jump to"))
-        root.forEachIndexed { k, st ->
+        rows.add(Row("Pick the step the macro should jump to (a step of the Main Job)"))
+        mainSteps.forEachIndexed { k, st ->
             rows.add(Row("${k + 1}.  ${stepTitle(st)}", icon = Icon.REDO) { closeMenu(); onPick(st) })
         }
-        if (root.isEmpty()) rows.add(Row("There are no steps to jump to yet."))
+        if (mainSteps.isEmpty()) rows.add(Row("There are no steps to jump to yet."))
         showMenu("Go to Step", rows)
     }
 
@@ -1019,12 +1072,12 @@ class EditorOverlay(
     private fun openStepPicker(title: String, exclude: String?, onPick: (Step) -> Unit) {
         val rows = ArrayList<Row>()
         rows.add(Row("Pick the step to run. It runs, then the list carries on."))
-        for ((n, st) in flatLabeled(root)) {
+        for ((n, st) in flatLabeled(mainSteps)) {
             if (st.id == exclude || st.type == StepType.LINK && st.targetId == exclude) continue
             val nested = n.contains('.')
             rows.add(Row((if (nested) "    " else "") + "$n.  ${stepTitle(st)}" + (if (st.linkedOnly) "   (only when linked)" else ""), icon = Icon.LINK) { closeMenu(); onPick(st) })
         }
-        if (root.isEmpty()) rows.add(Row("There are no steps to link yet."))
+        if (mainSteps.isEmpty()) rows.add(Row("There are no steps to link yet."))
         showMenu(title, rows)
     }
 
@@ -1033,7 +1086,7 @@ class EditorOverlay(
      * Ask, in plain words, whether it should run only when linked.
      */
     private fun askLinkedOnly(t: Step) {
-        val inMain = root.any { it.id == t.id }
+        val inMain = mainSteps.any { it.id == t.id }
         if (!inMain || t.linkedOnly) return
         showDialogBox("Run it only when linked?") { box ->
             box.addView(
@@ -1085,11 +1138,17 @@ class EditorOverlay(
     private fun openCardMenu(ref: Ref) {
         val s = stepAt(ref) ?: return
         val rows = ArrayList<Row>()
-        val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO && s.type != StepType.GOTO && s.type != StepType.LINK
+        if (s.type == StepType.WATCH) {
+            openWatchMenu(ref, s)
+            return
+        }
+        val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO && s.type != StepType.GOTO && s.type != StepType.LINK &&
+            s.type != StepType.COUNTER_ADD && s.type != StepType.COUNTER_RESET
         fun add(text: String, icon: Icon?, color: Int = TokenInts.text, act: () -> Unit) = rows.add(Row(text, color, icon, act))
 
         when (s.type) {
             StepType.CLICK_IMAGE -> {
+                add("Re-crop Image", Icon.PENCIL) { closeMenu(); recropStep(ref) }
                 add("Change Image", Icon.PENCIL) { closeMenu(); changeImage(ref) }
                 add("Edit Offset", Icon.PENCIL) { editOffsetDialog(ref) }
                 add("Edit Click Style", Icon.PENCIL) { editClickStyleDialog(ref) }
@@ -1124,6 +1183,17 @@ class EditorOverlay(
                 openStepPicker("Run Step", s.id) { t -> edit(ref) { it.copy(targetId = t.id) }; askLinkedOnly(t); refreshPanel() }
             }
             StepType.STOP_MACRO -> Unit
+            StepType.COUNTER_ADD -> {
+                add("Change Counter", Icon.PENCIL) { closeMenu(); pickCounter("Add to which counter?") { n -> edit(ref) { it.copy(text = n) }; refreshPanel() } }
+                add("Edit Amount", Icon.PENCIL) {
+                    var f: EditText? = null
+                    showForm("Amount", "How much to add each time. A minus number takes away.", { b -> f = field(b, "Amount", s.amount.toString(), signed = true) },
+                        { edit(ref) { it.copy(amount = f?.text.toString().toIntOrNull() ?: 1) } })
+                }
+            }
+            StepType.COUNTER_RESET -> add("Change Counter", Icon.PENCIL) {
+                closeMenu(); pickCounter("Reset which counter?") { n -> edit(ref) { it.copy(text = n) }; refreshPanel() }
+            }
             else -> add("Edit Delay", Icon.PENCIL) { editDelayDialog(ref) }
         }
         add("Test this step", Icon.PLAY, TokenInts.success) { runTest(1, ref) }
@@ -1152,6 +1222,11 @@ class EditorOverlay(
                 edit(ref) { it.copy(linkedOnly = !it.linkedOnly) }
                 refreshPanel()
             }
+        }
+        add("Duplicate", Icon.COPY) {
+            closeMenu()
+            modify(ref.path) { it.add((ref.index + 1).coerceAtMost(it.size), renumber(s)) }
+            refreshPanel()
         }
         add("Copy", Icon.COPY) { closeMenu(); clipboard = s; toast("Copied. Use Paste in the + menu.") }
         add("Cut", Icon.COPY) { removeStep(ref, s, cut = true) }
@@ -1355,14 +1430,7 @@ class EditorOverlay(
         showMenu(
             "Hold until",
             listOf(
-                Row("Re-crop Image", icon = Icon.PENCIL) {
-                    closeMenu()
-                    val start = if (h.boxW > 0) Rect(h.boxX, h.boxY, h.boxX + h.boxW, h.boxY + h.boxH) else null
-                    startCapture(start) { box, id, fw, fh ->
-                        upd { it.copy(templateId = id, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
-                        refreshPanel()
-                    }
-                },
+                Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); recropHold(ref) },
                 Row("Change Image", icon = Icon.PENCIL) {
                     closeMenu()
                     startCapture(null) { box, id, fw, fh ->
@@ -1436,7 +1504,7 @@ class EditorOverlay(
         showMenu(
             "Image",
             listOf(
-                Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); changeImage(ref, true) },
+                Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); recropStep(ref) },
                 Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeImage(ref, false) },
                 Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(s.threshold) { v -> edit(ref) { it.copy(threshold = v) } } },
                 Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(s.wholeScreen) { v -> edit(ref) { it.copy(wholeScreen = v) } } },
@@ -1461,7 +1529,7 @@ class EditorOverlay(
             ConditionKind.COLOR -> colorRows(rows, c, ::upd)
             ConditionKind.TEXT -> textRows(rows, c, ::upd)
             ConditionKind.IMAGE -> {
-                rows.add(Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); changeConditionImage(ref, j, false) })
+                rows.add(Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); recropCondition(ref, j) })
                 rows.add(Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeConditionImage(ref, j, true) })
                 rows.add(Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(c.threshold) { v -> upd { it.copy(threshold = v) } } })
                 rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(c.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } })
@@ -1482,6 +1550,16 @@ class EditorOverlay(
                     { upd { it.copy(percent = (pct?.text.toString().toIntOrNull() ?: 50).coerceIn(1, 99)) } })
             })
             ConditionKind.ONCE -> Unit
+            ConditionKind.COUNTER -> {
+                rows.add(Row("Change Counter", icon = Icon.PENCIL) { closeMenu(); pickCounter("Which counter?") { n -> upd { it.copy(text = n) }; refreshPanel() } })
+                rows.add(Row("Edit Number", icon = Icon.PENCIL) {
+                    var f: EditText? = null
+                    showForm("Number", null, { b -> f = field(b, "Number", c.percent.toString(), signed = true) }, { upd { it.copy(percent = f?.text.toString().toIntOrNull() ?: c.percent) } })
+                })
+                rows.add(Row(if (c.mustAppear) "Change to: below the number" else "Change to: at least the number", icon = Icon.REDO) {
+                    closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
+                })
+            }
         }
         rows.add(Row("Delete", TokenInts.danger, Icon.CLOSE) {
             closeMenu()
@@ -1545,6 +1623,8 @@ class EditorOverlay(
                     edit(ref) { it.copy(conditions = it.conditions + Condition(kind = ConditionKind.ONCE)) }
                     refreshPanel()
                 },
+                Triple(Icon.PLUS, "Counter At Least") { closeMenu(); addCounterCondition(ref, true) },
+                Triple(Icon.PLUS, "Counter Below") { closeMenu(); addCounterCondition(ref, false) },
             ),
         )
         box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.7).toInt(), screenH - dp(230))).apply { addView(body) })
@@ -1676,6 +1756,249 @@ class EditorOverlay(
         }
     }
 
+    // ================================================================ the picture editor (re-crop and tap point)
+
+    /**
+     * Opens the saved picture big. Drag its corners to crop it smaller, and (for a picture a step taps) drag the dot
+     * to choose where in the picture the tap lands. Saving keeps the new crop as a new picture file.
+     */
+    private fun openPictureEditor(templateId: String, withDot: Boolean, offX: Int, offY: Int, onSave: (String, Rect, Int, Int) -> Unit) {
+        val bmp = TemplateStore.load(templateId)
+        if (bmp == null) {
+            toast("This picture is missing. Use Change Image.")
+            return
+        }
+        showDialogBox("Image") { box ->
+            val view = PicCropView(ctx, bmp, withDot, android.graphics.PointF(bmp.width / 2f + offX, bmp.height / 2f + offY))
+            box.addView(view, lp(10).apply { height = dp(280) })
+            box.addView(
+                label(if (withDot) "Drag the corners to crop the picture smaller. Drag the dot to choose where the tap lands." else "Drag the corners to crop the picture smaller.", 12f, TokenInts.textMuted),
+                lp(8),
+            )
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.END
+            }
+            row.addView(textButton("CANCEL") { closeMenu() })
+            row.addView(textButton("RESET") { view.reset() })
+            row.addView(textButton("SAVE") {
+                val r = view.cropRect()
+                val d = view.dotPoint()
+                closeMenu()
+                val whole = r.left == 0 && r.top == 0 && r.right == bmp.width && r.bottom == bmp.height
+                val id = if (whole) templateId else TemplateStore.save(Bitmap.createBitmap(bmp, r.left, r.top, r.width(), r.height()))
+                val ox = if (withDot) Math.round(d.x - (r.left + r.width() / 2f)) else 0
+                val oy = if (withDot) Math.round(d.y - (r.top + r.height() / 2f)) else 0
+                onSave(id, r, ox, oy)
+                dirty = true
+                refreshPanelIfOpen()
+            })
+            box.addView(row, lp(8))
+        }
+    }
+
+    private fun recropStep(ref: Ref) {
+        val s = stepAt(ref) ?: return
+        openPictureEditor(s.templateId, true, s.offsetX, s.offsetY) { id, r, ox, oy ->
+            edit(ref) { it.copy(templateId = id, boxX = it.boxX + r.left, boxY = it.boxY + r.top, boxW = r.width(), boxH = r.height(), offsetX = ox, offsetY = oy) }
+        }
+    }
+
+    private fun recropCondition(ref: Ref, j: Int) {
+        val c = stepAt(ref)?.conditions?.getOrNull(j) ?: return
+        openPictureEditor(c.templateId, false, 0, 0) { id, r, _, _ ->
+            edit(ref) { st ->
+                st.copy(conditions = st.conditions.mapIndexed { k, x ->
+                    if (k == j) x.copy(templateId = id, boxX = x.boxX + r.left, boxY = x.boxY + r.top, boxW = r.width(), boxH = r.height()) else x
+                })
+            }
+        }
+    }
+
+    private fun recropHold(ref: Ref) {
+        val h = stepAt(ref)?.holdUntil ?: return
+        openPictureEditor(h.templateId, false, 0, 0) { id, r, _, _ ->
+            edit(ref) { st ->
+                st.copy(holdUntil = st.holdUntil?.copy(templateId = id, boxX = h.boxX + r.left, boxY = h.boxY + r.top, boxW = r.width(), boxH = r.height()))
+            }
+        }
+    }
+
+    // ================================================================ macro menu: Main Job / Watchers / Stuck rescue, counters, schedule
+
+    private fun openMacroMenu() {
+        val rows = ArrayList<Row>()
+        rows.add(Row("Show"))
+        fun sec(k: Int, name: String) = rows.add(Row((if (section == k) "✓  " else "     ") + name, icon = Icon.LIST) {
+            closeMenu(); section = k; panelScrollY = 0; refreshPanel()
+        })
+        sec(0, "Main Job")
+        sec(1, "Watchers (${watchers.size})")
+        sec(2, "Stuck rescue (${stuck.size})")
+        rows.add(Row("Settings"))
+        rows.add(Row("Counters (${counters.size})", icon = Icon.PLUS) { openCounters() })
+        rows.add(Row("Stuck check: " + (if (stuckSec > 0) "$stuckSec s" else "off"), icon = Icon.GEAR) { stuckDialog() })
+        rows.add(Row("Schedule: " + (MacroScheduler.describe(current()) ?: "off"), icon = Icon.PLAY) { scheduleDialog() })
+        showMenu("Macro", rows, anchor = dp(24) to dp(70))
+    }
+
+    private fun addWatcher() {
+        val n = watchers.size + 1
+        modify(emptyList()) { it.add(Step(StepType.WATCH, name = "Watcher $n")) }
+        refreshPanel()
+        openConditionPicker(Ref(emptyList(), watchers.size - 1))
+    }
+
+    private fun openWatchMenu(ref: Ref, s: Step) {
+        val rows = ArrayList<Row>()
+        rows.add(Row("Add Condition", icon = Icon.PLUS) { openConditionPicker(ref) })
+        rows.add(Row("Add step if true", TokenInts.success, Icon.PLUS) { openActionPicker(Target(ref.path + (ref.index to true))) })
+        rows.add(Row("Link a step if true", TokenInts.success, Icon.LINK) {
+            closeMenu()
+            openStepPicker("Run Step if true", s.id) { t -> addLinkTo(Target(ref.path + (ref.index to true)), t) }
+        })
+        rows.add(Row("Rename", icon = Icon.PENCIL) { renameDialog(ref) })
+        rows.add(Row("Duplicate", icon = Icon.COPY) {
+            closeMenu()
+            modify(ref.path) { it.add((ref.index + 1).coerceAtMost(it.size), renumber(s)) }
+            refreshPanel()
+        })
+        rows.add(Row("Delete", TokenInts.danger, Icon.CLOSE) { removeStep(ref, s, cut = false) })
+        rows.add(Row(if (s.enabled) "Disable" else "Enable", icon = Icon.EYE_OFF) {
+            closeMenu(); edit(ref) { it.copy(enabled = !it.enabled) }; refreshPanel()
+        })
+        showMenu(stepTitle(s), rows)
+    }
+
+    // ---------------------------------------------------------------- counters
+
+    private fun counterNote(c: CounterDef) =
+        if (c.keep) "kept between runs, now ${CounterStore.load(ctx, macroId, c.name)}" else "starts at 0 each run"
+
+    private fun openCounters() {
+        val rows = ArrayList<Row>()
+        rows.add(Row("Counters are numbers. Add to one in a step, and use it in a condition (for example: stop when it is at least 10)."))
+        counters.forEach { c -> rows.add(Row("${c.name}   (${counterNote(c)})", icon = Icon.PENCIL) { counterMenu(c) }) }
+        rows.add(Row("New counter", icon = Icon.PLUS) { newCounter { later { openCounters() } } })
+        showMenu("Counters", rows)
+    }
+
+    private fun counterMenu(c: CounterDef) {
+        val rows = ArrayList<Row>()
+        rows.add(Row(if (c.keep) "Start at 0 each run" else "Keep between runs (and days)", icon = Icon.REDO) {
+            counters = counters.map { if (it.name == c.name) it.copy(keep = !it.keep) else it }
+            dirty = true
+            openCounters()
+        })
+        if (c.keep) rows.add(Row("Set the kept number back to 0", icon = Icon.REDO) {
+            CounterStore.save(ctx, macroId, c.name, 0)
+            toast("${c.name} is 0")
+            openCounters()
+        })
+        rows.add(Row("Delete", TokenInts.danger, Icon.CLOSE) {
+            val uses = everyStep().count { st -> (st.type == StepType.COUNTER_ADD || st.type == StepType.COUNTER_RESET) && st.text == c.name || st.conditions.any { it.kind == ConditionKind.COUNTER && it.text == c.name } }
+            counters = counters.filter { it.name != c.name }
+            dirty = true
+            if (uses > 0) toast("$uses step(s) still use ${c.name}. It works as a counter that starts at 0.")
+            openCounters()
+        })
+        showMenu(c.name, rows)
+    }
+
+    private fun newCounter(onDone: (String) -> Unit) {
+        var name: EditText? = null
+        var keep = false
+        showForm("New counter", "Letters and numbers, for example: claims", { b ->
+            name = field(b, "Name", "", text = true)
+            b.addView(checkBox("Keep the number between runs (and days)", false) { keep = it }, lp(8))
+        }, {
+            val n = name?.text.toString().trim().take(24)
+            when {
+                n.isEmpty() -> toast("A counter needs a name.")
+                counters.any { it.name.equals(n, ignoreCase = true) } -> toast("There is already a counter named $n.")
+                else -> {
+                    counters = counters + CounterDef(n, keep)
+                    dirty = true
+                    onDone(n)
+                }
+            }
+        })
+    }
+
+    /** Pick one of the macro's counters, or make a new one. */
+    private fun pickCounter(title: String, onPick: (String) -> Unit) {
+        val rows = ArrayList<Row>()
+        counters.forEach { c -> rows.add(Row(c.name, icon = Icon.PLUS) { closeMenu(); onPick(c.name) }) }
+        rows.add(Row("New counter", icon = Icon.PLUS) { newCounter { n -> later { onPick(n) } } })
+        showMenu(title, rows)
+    }
+
+    private fun addCounterCondition(ref: Ref, atLeast: Boolean) {
+        pickCounter(if (atLeast) "Counter at least..." else "Counter below...") { name ->
+            var f: EditText? = null
+            showForm(if (atLeast) "$name is at least" else "$name is below", null, { b -> f = field(b, "Number", "5", signed = true) }, {
+                val n = f?.text.toString().toIntOrNull() ?: 5
+                edit(ref) { it.copy(conditions = it.conditions + Condition(kind = ConditionKind.COUNTER, text = name, percent = n, mustAppear = atLeast)) }
+            })
+        }
+    }
+
+    // ---------------------------------------------------------------- stuck check and schedule
+
+    private fun stuckDialog() {
+        var f: EditText? = null
+        showForm(
+            "Stuck check",
+            "If the screen does not change for this many seconds, the Stuck rescue steps run (none = the macro stops). " +
+                "It looks for a frozen screen, so a game with a moving background is never counted as stuck by mistake. 0 turns it off. Needs screen capture.",
+            { b -> f = field(b, "Seconds (0 = off, otherwise 10 to 600)", stuckSec.toString()) },
+            {
+                val v = f?.text.toString().toIntOrNull() ?: 0
+                stuckSec = if (v <= 0) 0 else v.coerceIn(10, 600)
+                dirty = true
+            },
+        )
+    }
+
+    private fun scheduleDialog() {
+        val sc = schedule
+        var on = sc.enabled
+        var days = sc.days
+        var times: EditText? = null
+        var dur: EditText? = null
+        showForm(
+            "Schedule",
+            "Starts the macro by itself. The phone must be unlocked, Accessibility on, and screen capture started (if the macro looks at the screen). Applies when you Save.",
+            { b ->
+                b.addView(checkBox("Start by itself", on) { on = it }, lp(6))
+                times = field(b, "Times of day, 24 hours (for example 06:00, 18:30)", MacroScheduler.timesText(sc.minutes), text = true)
+                val names = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+                b.addView(label("Days", 12f, TokenInts.textMuted), lp(10))
+                names.chunked(4).forEachIndexed { row, chunk ->
+                    val line = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+                    chunk.forEachIndexed { k, name ->
+                        val bit = 1 shl (row * 4 + k)
+                        line.addView(checkBox(name, days and bit != 0) { c -> days = if (c) days or bit else days and bit.inv() }.apply { textSize = 14f },
+                            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                    }
+                    b.addView(line)
+                }
+                dur = field(b, "Stop after (minutes, 0 = when it finishes)", sc.durationMin.toString())
+            },
+            {
+                val parsed = MacroScheduler.parseTimes(times?.text.toString())
+                if (on && (parsed == null || parsed.isEmpty())) {
+                    toast("Times look like 06:00, 18:30. Schedule not changed.")
+                } else if (on && days and 127 == 0) {
+                    toast("Pick at least one day. Schedule not changed.")
+                } else {
+                    schedule = Schedule(on, parsed ?: emptyList(), days and 127, (dur?.text.toString().toIntOrNull() ?: 0).coerceIn(0, 1440))
+                    dirty = true
+                }
+            },
+        )
+    }
+
     // ================================================================ placing a picture: the capture box
 
     private fun changeImage(ref: Ref, keepBox: Boolean = true) {
@@ -1731,7 +2054,7 @@ class EditorOverlay(
     private fun openExistPicker(onDone: (Rect, String, Int, Int) -> Unit) {
         data class Pic(val id: String, val box: Rect, val w: Int, val h: Int)
         val pics = LinkedHashMap<String, Pic>()
-        for (s in flat(root)) {
+        for (s in everyStep()) {
             if (s.type == StepType.CLICK_IMAGE && s.templateId.isNotEmpty()) pics.putIfAbsent(s.templateId, Pic(s.templateId, Rect(s.boxX, s.boxY, s.boxX + s.boxW, s.boxY + s.boxH), s.capW, s.capH))
             for (c in s.conditions) if (c.kind == ConditionKind.IMAGE && c.templateId.isNotEmpty()) {
                 pics.putIfAbsent(c.templateId, Pic(c.templateId, Rect(c.boxX, c.boxY, c.boxX + c.boxW, c.boxY + c.boxH), c.capW, c.capH))
@@ -2056,12 +2379,12 @@ class EditorOverlay(
      */
     private fun runTest(kind: Int, ref: Ref) {
         closeMenu()
-        if (root.isEmpty()) {
-            toast("Add a step first.")
+        if (mainSteps.isEmpty()) {
+            toast("Add a step to the Main Job first.")
             return
         }
         val svc = MacroService.instance ?: return
-        val macro = Macro(macroId, macroName, root, repeat = 1, game = game, version = version)
+        val macro = current().copy(repeat = 1)
         val done = { setHidden(false) }
         when (kind) {
             1 -> {
@@ -2084,15 +2407,17 @@ class EditorOverlay(
     // ================================================================ saving
 
     private fun save() {
-        MacroRepository.save(Macro(id = macroId, name = macroName, steps = root, repeat = repeat, game = game, version = version))
+        MacroRepository.save(current())
         dirty = false
         // delete picture files nothing uses any more
         val used = HashSet<String>()
-        for (m in MacroRepository.macros) for (s in flat(m.steps)) {
+        for (m in MacroRepository.macros) for (s in flat(m.lists.flatten())) {
             if (s.templateId.isNotEmpty()) used.add(s.templateId)
             for (c in s.conditions) if (c.templateId.isNotEmpty()) used.add(c.templateId)
+            s.holdUntil?.let { if (it.templateId.isNotEmpty()) used.add(it.templateId) }
         }
         TemplateStore.prune(used)
+        MacroScheduler.reschedule(ctx)
         refreshPanelIfOpen()
     }
 
