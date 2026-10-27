@@ -33,4 +33,10 @@ object Ui {
         isClickable = true
         setOnClickListener { onClick() }
     }
+
+    /** The full screen size in pixels. Android 11 has a direct call for it; Android 10 needs the older one. */
+    @Suppress("DEPRECATION")
+    fun screenBounds(wm: android.view.WindowManager): android.graphics.Rect =
+        if (android.os.Build.VERSION.SDK_INT >= 30) wm.currentWindowMetrics.bounds
+        else android.util.DisplayMetrics().also { wm.defaultDisplay.getRealMetrics(it) }.let { android.graphics.Rect(0, 0, it.widthPixels, it.heightPixels) }
 }

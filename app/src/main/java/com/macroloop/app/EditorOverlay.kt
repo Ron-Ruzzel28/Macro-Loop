@@ -83,8 +83,8 @@ class EditorOverlay(
     private var clipboard: Step? = null
 
     // read fresh each time, so a turned phone gets menus that fit
-    private val screenW: Int get() = wm.currentWindowMetrics.bounds.width()
-    private val screenH: Int get() = wm.currentWindowMetrics.bounds.height()
+    private val screenW: Int get() = Ui.screenBounds(wm).width()
+    private val screenH: Int get() = Ui.screenBounds(wm).height()
 
     private var chip: View? = null
     private var chipX = Ui.dp(ctx, 12)

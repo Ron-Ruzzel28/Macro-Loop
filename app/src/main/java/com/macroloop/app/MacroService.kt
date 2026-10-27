@@ -135,7 +135,7 @@ class MacroService : AccessibilityService() {
      */
     /** Positions only match when the phone is held the way the macro was made. */
     private fun warnOrientation(macro: Macro) {
-        val b = wm.currentWindowMetrics.bounds
+        val b = Ui.screenBounds(wm)
         if ((b.width() > b.height()) != macro.landscape) {
             Toast.makeText(this, "This macro was made for " + (if (macro.landscape) "landscape" else "portrait") + ". Turn the phone that way.", Toast.LENGTH_LONG).show()
         }

@@ -103,7 +103,7 @@ class CaptureService : Service() {
         }
         projection = proj
 
-        val bounds = (getSystemService(Context.WINDOW_SERVICE) as WindowManager).currentWindowMetrics.bounds
+        val bounds = Ui.screenBounds(getSystemService(Context.WINDOW_SERVICE) as WindowManager)
         width = bounds.width()
         height = bounds.height()
         val dpi = resources.displayMetrics.densityDpi
@@ -149,7 +149,7 @@ class CaptureService : Service() {
         super.onConfigurationChanged(newConfig)
         val d = display ?: return
         val handler = handlerRef ?: return
-        val b = (getSystemService(Context.WINDOW_SERVICE) as WindowManager).currentWindowMetrics.bounds
+        val b = Ui.screenBounds(getSystemService(Context.WINDOW_SERVICE) as WindowManager)
         if (b.width() == width && b.height() == height) return
         synchronized(lock) {
             width = b.width()
