@@ -129,6 +129,8 @@ object SelfTest {
             lines += ScreenCheck.selfTest()
             lines += ""
             lines += MacroScheduler.selfTest()
+            lines += ""
+            lines += HelpTopics.selfTest()
             report = lines.joinToString("\n")
         } catch (e: Throwable) {
             report = "Self-test crashed: ${e.javaClass.simpleName}: ${e.message}"

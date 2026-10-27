@@ -36,7 +36,7 @@ private data class Ref(val path: Path, val index: Int)
 /** Where a new step goes: into the list at [path], at [insertAt] (or the end), or in place of the step at [replace]. */
 private data class Target(val path: Path, val insertAt: Int? = null, val replace: Int? = null)
 
-private class Row(val text: String, val color: Int = TokenInts.text, val icon: Icon? = null, val action: (() -> Unit)? = null)
+private class Row(val text: String, val color: Int = TokenInts.text, val icon: Icon? = null, val help: Boolean = true, val action: (() -> Unit)? = null)
 
 /**
  * The editor, built the way Macrorify's Abstract editor works:
@@ -160,7 +160,97 @@ class EditorOverlay(
 
     // ================================================================ lifecycle and the hand button
 
-    fun show() = addChip()
+    fun show() {
+        addChip()
+        val prefs = ctx.getSharedPreferences(MacroService.PREFS, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("tour_done", false)) {
+            prefs.edit().putBoolean("tour_done", true).apply()
+            later { HelpTopics.byId("tour")?.let { showHelp(it, tour = true) } }
+        }
+    }
+
+    // ================================================================ help: the small (i) buttons
+
+    private var helpView: View? = null
+
+    private fun infoBtn(topic: Topic): View = TextView(ctx).apply {
+        text = "ⓘ"
+        textSize = 17f
+        setTextColor(TokenInts.primary)
+        gravity = Gravity.CENTER
+        setPadding(dp(8), 0, dp(8), 0)
+        minimumWidth = dp(40)
+        minimumHeight = dp(40)
+        contentDescription = "Help: ${topic.title}"
+        isClickable = true
+        setOnClickListener { showHelp(topic) }
+    }
+
+    /** Long-press help for the round buttons. */
+    private fun holdHelp(v: View, id: String): View {
+        val t = HelpTopics.byId(id) ?: return v
+        v.setOnLongClickListener { showHelp(t); true }
+        return v
+    }
+
+    /** A small window over everything: what it is, and (with MORE) an example, the best tip and a common mistake. It does not close the menu under it. */
+    private fun showHelp(topic: Topic, tour: Boolean = false) {
+        rm(helpView)
+        helpView = null
+        val box = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(10))
+            background = Ui.rounded(0xFF20232B.toInt(), dp(14).toFloat())
+        }
+        box.addView(label(topic.title, 19f, TokenInts.text).apply { setTypeface(typeface, Typeface.BOLD) })
+        val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(label(topic.short, 15f, TokenInts.text), lp(8))
+        val more = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        fun part(head: String, text: String, color: Int) {
+            if (text.isEmpty()) return
+            more.addView(label(head, 12f, color).apply { setTypeface(typeface, Typeface.BOLD) }, lp(10))
+            more.addView(label(text, 14f, TokenInts.text), lp(2))
+        }
+        part("EXAMPLE", topic.example, TokenInts.primary)
+        part("BEST TIP", topic.tip, TokenInts.success)
+        part("COMMON MISTAKE", topic.mistake, TokenInts.warning)
+        if (tour) {
+            more.addView(label("The round button opens the menu. Manage Actions opens your steps. Tap any step to change it, tap the title to switch between Main Job, Watchers and Stuck rescue.", 14f, TokenInts.text), lp(10))
+            more.addView(label("Look for the ⓘ next to steps, conditions and menu rows. Tap it any time you are not sure what something does. Hold the round buttons for a tip too.", 14f, TokenInts.text), lp(8))
+        }
+        val hasMore = more.childCount > 0
+        body.addView(more)
+        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.55).toInt(), screenH - dp(300))).apply { addView(body) })
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
+        if (tour) row.addView(textButton("ALL TIPS") { rm(helpView); helpView = null; openHelpList() })
+        if (hasMore) {
+            lateinit var moreBtn: TextView
+            moreBtn = textButton("MORE") {
+                val show = more.visibility != View.VISIBLE
+                more.visibility = if (show) View.VISIBLE else View.GONE
+                moreBtn.text = if (show) "LESS" else "MORE"
+            }
+            row.addView(moreBtn)
+        }
+        row.addView(textButton("CLOSE") { rm(helpView); helpView = null })
+        box.addView(row, lp(8))
+        val w = (screenW * 0.9).toInt()
+        val p = params(w, WindowManager.LayoutParams.WRAP_CONTENT, (screenW - w) / 2, dp(90), outside = true)
+        box.setOnTouchListener { _, e -> if (e.action == MotionEvent.ACTION_OUTSIDE) { rm(helpView); helpView = null; true } else false }
+        wm.addView(box, p)
+        helpView = box
+    }
+
+    /** Every help tip, in groups. */
+    private fun openHelpList() {
+        val rows = ArrayList<Row>()
+        var last = ""
+        for (t in HelpTopics.all) {
+            if (t.group != last) { rows.add(Row(t.group)); last = t.group }
+            rows.add(Row(t.title, icon = Icon.LIST, help = false) { showHelp(t) })
+        }
+        showMenu("Help topics", rows)
+    }
 
     /** The phone was turned: rebuild what is open so it fits the new size. */
     fun onRotated() {
@@ -177,6 +267,7 @@ class EditorOverlay(
         closeMenu()
         rm(panel); panel = null
         rm(chip); chip = null
+        rm(helpView); helpView = null
         CaptureService.instance?.fast = false
     }
 
@@ -339,7 +430,7 @@ class EditorOverlay(
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        head.addView(IconBtn(ctx, Icon.SHRINK) { shrinkToChip() }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        head.addView(holdHelp(IconBtn(ctx, Icon.SHRINK) { shrinkToChip() }, "btn_shrink"), LinearLayout.LayoutParams(dp(44), dp(44)))
         val titleCol = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         titleCol.addView(label(macroName, 17f, TokenInts.text).apply {
             maxLines = 1
@@ -351,10 +442,10 @@ class EditorOverlay(
         titleCol.isClickable = true
         titleCol.setOnClickListener { openMacroMenu() }
         head.addView(titleCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10); marginEnd = dp(6) })
-        head.addView(IconBtn(ctx, Icon.PLAY, TokenInts.success) {
-            showMenu("Test", listOf(Row("Run Test: From beginning", icon = Icon.PLAY) { closeMenu(); runTest(0, Ref(emptyList(), 0)) }), anchor = (screenW - dp(250)) to dp(90))
-        }, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(6) })
-        head.addView(IconBtn(ctx, Icon.PLUS) { if (section == 1) addWatcher() else openActionPicker(Target(emptyList())) }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        head.addView(holdHelp(IconBtn(ctx, Icon.PLAY, TokenInts.success) {
+            showMenu("Test", listOf(Row("Run Test: From beginning", icon = Icon.PLAY, help = false) { closeMenu(); runTest(0, Ref(emptyList(), 0)) }), anchor = (screenW - dp(250)) to dp(90))
+        }, "btn_test"), LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(6) })
+        head.addView(holdHelp(IconBtn(ctx, Icon.PLUS) { if (section == 1) addWatcher() else openActionPicker(Target(emptyList())) }, "btn_plus"), LinearLayout.LayoutParams(dp(44), dp(44)))
         rootView.addView(head)
 
         val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
@@ -544,7 +635,7 @@ class EditorOverlay(
     }
 
     /** One row of the logic tree under a card: a green mark, what has to be true, and how sure it must be. */
-    private fun treeRow(icon: String, ok: Boolean, content: View, second: String?, onClick: () -> Unit): View {
+    private fun treeRow(icon: String, ok: Boolean, content: View, second: String?, help: Topic? = null, onClick: () -> Unit): View {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -557,6 +648,7 @@ class EditorOverlay(
         col.addView(content)
         if (second != null) col.addView(label(second, 11f, TokenInts.textMuted))
         row.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(8) })
+        if (help != null) row.addView(infoBtn(help).apply { setPadding(dp(4), 0, dp(4), 0) })
         return row
     }
 
@@ -618,6 +710,7 @@ class EditorOverlay(
         val sub = subline(s)
         if (sub.isNotEmpty()) col.addView(label(sub, 11f, TokenInts.textMuted))
         top.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) })
+        HelpTopics.forStep(s.type)?.let { top.addView(infoBtn(it).apply { setPadding(dp(4), 0, dp(4), 0) }) }
         // The number tab is also the handle: hold it and slide the card up or down to change its order.
         val tab = label(num, 12f, TokenInts.onPrimary).apply {
             gravity = Gravity.CENTER
@@ -637,7 +730,7 @@ class EditorOverlay(
         var rows = 0
         if (s.type == StepType.CLICK_IMAGE) {
             tree.addView(
-                treeRow("✓", true, imageContent(s.templateId, true, s.threshold), if (s.wholeScreen) "[Whole Screen]" else "[Captured Location]") {
+                treeRow("✓", true, imageContent(s.templateId, true, s.threshold), if (s.wholeScreen) "[Whole Screen]" else "[Captured Location]", help = HelpTopics.byId("own_picture")) {
                     openOwnPictureMenu(ref)
                 },
             )
@@ -652,11 +745,12 @@ class EditorOverlay(
                         refreshPanel()
                     },
                 )
+                HelpTopics.byId("all_true")?.let { chipRow.addView(infoBtn(it).apply { setPadding(dp(8), 0, dp(4), 0) }) }
                 tree.addView(chipRow)
             }
             val (content, second) = conditionContent(c)
             val ok = c.changes || c.mustAppear || (c.kind != ConditionKind.IMAGE && c.kind != ConditionKind.COLOR && c.kind != ConditionKind.TEXT)
-            tree.addView(treeRow(if (!c.enabled) "–" else if (ok) "✓" else "✕", ok && c.enabled, content, second) { openConditionMenu(ref, j) })
+            tree.addView(treeRow(if (!c.enabled) "–" else if (ok) "✓" else "✕", ok && c.enabled, content, second, help = HelpTopics.forCondition(c)) { openConditionMenu(ref, j) })
             rows++
         }
         s.holdUntil?.let { h ->
@@ -664,7 +758,7 @@ class EditorOverlay(
             val hold = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
             hold.addView(label("Hold until:", 12f, TokenInts.warning))
             hold.addView(content)
-            tree.addView(treeRow("⏳", true, hold, (second ?: "") + "  max ${s.holdMaxMs / 1000}s") { openHoldMenu(ref) })
+            tree.addView(treeRow("⏳", true, hold, (second ?: "") + "  max ${s.holdMaxMs / 1000}s", help = HelpTopics.byId("hold_row")) { openHoldMenu(ref) })
             rows++
         }
         if (rows > 0) card.addView(tree)
@@ -745,7 +839,8 @@ class EditorOverlay(
                 line.addView(label(r.text, 12f, TokenInts.textMuted).apply { setTypeface(typeface, Typeface.BOLD) })
             } else {
                 if (r.icon != null) line.addView(IconView(ctx, r.icon, if (r.color == TokenInts.text) TokenInts.primary else r.color), LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(14) })
-                line.addView(label(r.text, 16f, r.color))
+                line.addView(label(r.text, 16f, r.color), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                if (r.help) HelpTopics.find(r.text)?.let { line.addView(infoBtn(it)) }
                 line.isClickable = true
                 line.setOnClickListener { act() }
             }
@@ -916,6 +1011,7 @@ class EditorOverlay(
             LinearLayout.LayoutParams(dp(36), dp(36)),
         )
         b.addView(label(text, 14f, TokenInts.text), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(8) })
+        HelpTopics.find(text)?.let { b.addView(infoBtn(it).apply { minimumWidth = dp(28); setPadding(dp(4), 0, dp(2), 0) }) }
         return b
     }
 
@@ -1144,7 +1240,7 @@ class EditorOverlay(
         }
         val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO && s.type != StepType.GOTO && s.type != StepType.LINK &&
             s.type != StepType.COUNTER_ADD && s.type != StepType.COUNTER_RESET
-        fun add(text: String, icon: Icon?, color: Int = TokenInts.text, act: () -> Unit) = rows.add(Row(text, color, icon, act))
+        fun add(text: String, icon: Icon?, color: Int = TokenInts.text, act: () -> Unit) = rows.add(Row(text, color, icon, action = act))
 
         when (s.type) {
             StepType.CLICK_IMAGE -> {
@@ -1839,6 +1935,8 @@ class EditorOverlay(
         rows.add(Row("Counters (${counters.size})", icon = Icon.PLUS) { openCounters() })
         rows.add(Row("Stuck check: " + (if (stuckSec > 0) "$stuckSec s" else "off"), icon = Icon.GEAR) { stuckDialog() })
         rows.add(Row("Schedule: " + (MacroScheduler.describe(current()) ?: "off"), icon = Icon.PLAY) { scheduleDialog() })
+        rows.add(Row("Help"))
+        rows.add(Row("Help topics", icon = Icon.LIST) { openHelpList() })
         showMenu("Macro", rows, anchor = dp(24) to dp(70))
     }
 
@@ -2134,17 +2232,18 @@ class EditorOverlay(
         val info = label("", 14f, TokenInts.text).apply { setPadding(dp(4), 0, dp(10), 0) }
         capInfo = info
         bar.addView(info)
-        fun icon(i: Icon, color: Int, act: () -> Unit) = IconBtn(ctx, i, color, 44) { act() }.also {
+        fun icon(i: Icon, color: Int, help: String, act: () -> Unit) = IconBtn(ctx, i, color, 44) { act() }.also {
+            holdHelp(it, help)
             bar.addView(it, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
         }
-        icon(Icon.REDO, TokenInts.primary) {
+        icon(Icon.REDO, TokenInts.primary, "btn_redo") {
             val b = capBoxLp ?: return@icon
             b.x = start.left; b.y = start.top; b.width = start.width(); b.height = start.height()
             runCatching { wm.updateViewLayout(capBox, b) }
             onCapChanged()
         }
-        icon(Icon.CLOSE, TokenInts.danger) { cancelCapture() }
-        icon(Icon.CHECK, TokenInts.success) { confirmCapture(onDone) }
+        icon(Icon.CLOSE, TokenInts.danger, "btn_cancel") { cancelCapture() }
+        icon(Icon.CHECK, TokenInts.success, "btn_ok") { confirmCapture(onDone) }
         val lpBar = params(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, dp(10), screenH - dp(190))
         makeDraggable(info, bar, lpBar)
         wm.addView(bar, lpBar)
