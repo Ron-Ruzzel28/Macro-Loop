@@ -93,6 +93,7 @@ class RunState {
     val firedAt = HashMap<String, Long>()       // when each watcher last ran its steps
     var lastChangeAt = 0L                       // when the screen last changed
     var rescues = 0                             // stuck rescues in a row, with no change in between
+    var linkTargets: Set<String> = emptySet()   // steps that some Run step link points to
     var scan = false                            // Scan mode: look once, skip what is not there, loop the list
     var acted = false                           // something was done in this pass of the list
 }
@@ -123,6 +124,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         state.macro = macro
         state.scan = macro.scan
         state.byId = collect(root + macro.watchers + macro.stuck)
+        state.linkTargets = state.byId.values.filter { it.type == StepType.LINK && it.targetId.isNotEmpty() }.map { it.targetId }.toSet()
         state.keep = macro.counters.filter { it.keep }.map { it.name }.toSet()
         for (name in state.keep) state.counters[name] = host.counterLoad(macro.id, name)
         state.lastChangeAt = host.now()
@@ -229,7 +231,9 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
             host.note("step $where is turned off, so it was skipped")
             return StepResult(Flow.Next, prevOk)
         }
-        if (step.linkedOnly && !viaLink) {
+        // A step marked "only when linked" is skipped in the normal order only if a link really points to it.
+        // With no link, skipping it would mean it never runs at all.
+        if (step.linkedOnly && !viaLink && step.id in state.linkTargets) {
             host.note("step $where is set to \"run only when linked\", so it was skipped")
             return StepResult(Flow.Next, prevOk)
         }

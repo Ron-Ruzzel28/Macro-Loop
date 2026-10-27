@@ -655,7 +655,7 @@ class EditorOverlay(
             StepType.WATCH -> parts.add(if (s.conditions.isEmpty()) "[add a condition]" else "[looks about once a second]")
             else -> parts.add("[Delay ${s.delayMs}ms/${s.waitNextMs}ms]")
         }
-        if (s.linkedOnly) parts.add("[Runs only when linked]")
+        if (s.linkedOnly) parts.add(if (linksTo(s.id) > 0) "[Runs only when linked]" else "[Runs in order: nothing links to it]")
         val n = linksTo(s.id)
         if (n > 0 && s.type != StepType.LINK && s.type != StepType.GOTO) parts.add("[linked ×$n]")
         if (!s.enabled) parts.add("OFF")
@@ -990,6 +990,7 @@ class EditorOverlay(
             textSize = 17f
             setTextColor(TokenInts.text)
             setSingleLine(true)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or android.view.inputmethod.EditorInfo.IME_ACTION_DONE
             inputType = when {
                 text -> InputType.TYPE_CLASS_TEXT
                 decimal -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
@@ -1196,7 +1197,7 @@ class EditorOverlay(
             StepType.CLICK_IMAGE -> newOrExist { box, id, fw, fh ->
                 val n = flat(root).count { it.type == StepType.CLICK_IMAGE } + 1
                 finishAdd(target, Step(
-                    StepType.CLICK_IMAGE, templateId = id, label = "Image $n", wholeScreen = false,
+                    StepType.CLICK_IMAGE, templateId = id, label = "Image $n", wholeScreen = false, threshold = takeSuggested() ?: 90,
                     boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
                 ))
             }
@@ -1563,7 +1564,7 @@ class EditorOverlay(
         newOrExist { box, id, fw, fh ->
             val c = Condition(
                 kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = false,
-                label = "Hold ${ref.index + 1}",
+                label = "Hold ${ref.index + 1}", threshold = takeSuggested() ?: 90,
                 boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
             )
             edit(ref) { it.copy(holdUntil = c, clicks = 1) }
@@ -1926,7 +1927,7 @@ class EditorOverlay(
             val n = (stepAt(ref)?.conditions?.size ?: 0)
             val c = Condition(
                 kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = false,
-                label = "Condition ${ref.index + 1}${('a' + n)}",
+                label = "Condition ${ref.index + 1}${('a' + n)}", threshold = takeSuggested() ?: 90,
                 boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
             )
             edit(ref) { it.copy(conditions = it.conditions + c) }
@@ -2190,6 +2191,27 @@ class EditorOverlay(
 
     private var lastCrop: Bitmap? = null
 
+    /** The similarity a just-captured picture needs, when it was seen to change on screen. Taken once by whoever saves the picture. */
+    private var suggestedThreshold: Int? = null
+
+    private fun takeSuggested(): Int? = suggestedThreshold.also { suggestedThreshold = null }
+
+    /** The lowest score the picture gets at its own spot over about a second of looking. Null when it cannot be told. */
+    private suspend fun lowestMatch(crop: Bitmap, box: Rect, frameW: Int, frameH: Int): Int? {
+        var lowest = 100
+        var looks = 0
+        val region = Matcher.nearRegion(box.left, box.top, box.width(), box.height(), 1.0, frameW, frameH)
+        repeat(7) {
+            val f = CaptureService.grabFresh(SystemClock.elapsedRealtime(), 250) ?: return@repeat
+            val r = withContext(Dispatchers.Default) { Matcher.find(f, crop, region, 40) }
+            if (r.tooPlain) return null
+            lowest = minOf(lowest, (r.score * 100).toInt())
+            looks++
+            delay(100)
+        }
+        return if (looks >= 3) lowest else null
+    }
+
     /**
      * After the box is drawn: the area is shown big. Tap it to take the colour of that exact pixel, nudge it with the
      * X and Y buttons, and fine-tune with the red / green / blue sliders or the hex box.
@@ -2346,16 +2368,34 @@ class EditorOverlay(
             val scale = if (capW > 0) frame.width.toDouble() / capW else 1.0
             val region = if (whole) null else Matcher.nearRegion(bx, by, bw, bh, scale, frame.width, frame.height)
             val res = withContext(Dispatchers.Default) { Matcher.find(frame, t, region, 40, scale) }
+            val first = (res.score * 100).toInt()
+            // Look several times, so a picture that glows or moves is judged by its weakest look, not its best one.
+            var lowest = first
+            var highest = first
+            if (!res.tooPlain && first >= 60) {
+                CaptureService.instance?.fast = true
+                repeat(8) {
+                    val f = CaptureService.grabFresh(SystemClock.elapsedRealtime(), 250)
+                    if (f != null) {
+                        val r = withContext(Dispatchers.Default) { Matcher.find(f, t, region, 40, scale) }
+                        val p = (r.score * 100).toInt()
+                        lowest = minOf(lowest, p)
+                        highest = maxOf(highest, p)
+                    }
+                    delay(120)
+                }
+                CaptureService.instance?.fast = false
+            }
             setHidden(false)
-            val pct = (res.score * 100).toInt()
             when {
                 res.tooPlain -> toast("That picture is too plain to find. Re-crop it with more detail.")
-                pct < 70 -> toast("Best match is only $pct%. Open the screen where the picture is, then try Auto-tune.")
+                lowest < 65 -> toast("Best match is only $lowest%. Open the screen where the picture is, then try Auto-tune.")
                 else -> {
-                    val v = (pct - 6).coerceIn(70, 96)
+                    val v = (lowest - 6).coerceIn(65, 96)
                     onSet(v)
                     dirty = true
-                    toast("It matches at $pct%. Similarity set to $v%.")
+                    toast(if (highest - lowest >= 8) "It matches between $lowest% and $highest% (it changes on screen). Similarity set to $v%."
+                    else "It matches at about $lowest%. Similarity set to $v%.")
                     refreshPanelIfOpen()
                 }
             }
@@ -2368,7 +2408,8 @@ class EditorOverlay(
         val s = stepAt(ref) ?: return
         val start = if (keepBox && s.boxW > 0) Rect(s.boxX, s.boxY, s.boxX + s.boxW, s.boxY + s.boxH) else null
         startCapture(start) { box, id, fw, fh ->
-            edit(ref) { it.copy(templateId = id, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
+            val sug = takeSuggested()
+            edit(ref) { it.copy(templateId = id, threshold = sug ?: it.threshold, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
             refreshPanel()
         }
     }
@@ -2377,9 +2418,10 @@ class EditorOverlay(
         val c = stepAt(ref)?.conditions?.getOrNull(j) ?: return
         val start = if (!fresh && c.boxW > 0) Rect(c.boxX, c.boxY, c.boxX + c.boxW, c.boxY + c.boxH) else null
         startCapture(start) { box, id, fw, fh ->
+            val sug = takeSuggested()
             edit(ref) { st ->
                 st.copy(conditions = st.conditions.mapIndexed { k, x ->
-                    if (k == j) x.copy(templateId = id, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) else x
+                    if (k == j) x.copy(templateId = id, threshold = sug ?: x.threshold, boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) else x
                 })
             }
             refreshPanel()
@@ -2578,12 +2620,24 @@ class EditorOverlay(
             val h = region.height().coerceIn(2, frame.height - y)
             val crop = Bitmap.createBitmap(frame, x, y, w, h)
             lastCrop = if (capMode == 1) crop else null
+            suggestedThreshold = null
             val id = when (capMode) {
                 0 -> TemplateStore.save(crop)
                 1 -> ScreenCheck.hex(ScreenCheck.meanColor(crop, Rect(0, 0, w, h)))
                 else -> ""
             }
             removeCapture()
+            if (capMode == 0) {
+                // Watch the picture for a moment. A glow or animation makes it match lower on some frames, so the similarity
+                // has to be lower too, or the macro would find it only now and then.
+                CaptureService.instance?.fast = true
+                val lo = lowestMatch(crop, Rect(x, y, x + w, y + h), frame.width, frame.height)
+                CaptureService.instance?.fast = false
+                if (lo != null && lo < 88) {
+                    suggestedThreshold = (lo - 6).coerceIn(65, 96)
+                    toast("This picture changes a little on screen (a glow or animation). Similarity set to $suggestedThreshold%.")
+                }
+            }
             onDone(Rect(x, y, x + w, y + h), id, frame.width, frame.height)
             dirty = true
             refreshPanelIfOpen()

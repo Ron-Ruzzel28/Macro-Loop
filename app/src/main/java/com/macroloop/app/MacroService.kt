@@ -651,6 +651,7 @@ class MacroService : AccessibilityService() {
                 ?: return Outcome.Fatal("Stopped: step $where has no picture yet. Edit the macro and capture it.")
             val startedAt = SystemClock.elapsedRealtime()
             var bestScore = 0.0
+            var rejectedPart = -1.0
             var last: Matcher.Result? = null
             var lastCount = 0
             var steady = 0
@@ -674,6 +675,7 @@ class MacroService : AccessibilityService() {
                         return Outcome.Fatal("Stopped: the picture in step $where is too plain to find. Pick a bigger area with more detail.")
                     }
                     bestScore = maxOf(bestScore, res.score)
+                    if (!res.found && res.score * 100 >= step.threshold) rejectedPart = res.weakestPart
                     if (res.found) {
                         val prev = last
                         steady = if (prev != null && prev.found && lastCount == hits.size &&
@@ -700,8 +702,15 @@ class MacroService : AccessibilityService() {
                 waitHook?.invoke()
             }
             flash(listOfNotNull(last), false)
+            val name = step.label.ifBlank { "the picture" }
+            if (rejectedPart >= 0) {
+                return Outcome.Missing(
+                    "Stopped: \"$name\" matched ${(bestScore * 100).toInt()}% overall, but one part of it differs (${(rejectedPart * 100).toInt()}%). " +
+                        "The picture changes on screen (a glow or animation). Lower the similarity, or use Auto-tune.",
+                )
+            }
             return Outcome.Missing(
-                "Stopped: couldn't find \"${step.label.ifBlank { "the picture" }}\" for ${limitMs / 1000} s. " +
+                "Stopped: couldn't find \"$name\" for ${limitMs / 1000} s. " +
                     "Best match was ${(bestScore * 100).toInt()}%, needed ${step.threshold}%.",
             )
         }

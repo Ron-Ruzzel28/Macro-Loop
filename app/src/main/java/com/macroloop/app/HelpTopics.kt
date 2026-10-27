@@ -123,7 +123,7 @@ object HelpTopics {
         t("disable", "Disable / Enable", "Skips the step without deleting it.", "Turn off a step while you test something else.", "Easier than deleting when you are not sure.")
         t("cond_off", "Turn Off (keep it)", "Ignores this condition without deleting it.", "Try the step without the condition, then turn it back on.")
         t("similarity", "Edit Similarity %", "How much the picture on screen must look like the saved one. Higher is stricter.", "", "Start at 90. Lower it to 80-85 if it is missed. Raise it if it taps the wrong thing.", "Setting it very low. It will tap look-alikes.")
-        t("auto_tune", "Auto-tune Similarity", "Looks at the screen right now and sets the similarity just under how well the saved picture matches. The picture must be on the screen.",
+        t("auto_tune", "Auto-tune Similarity", "Looks at the screen for about a second and sets the similarity just under the picture's weakest match. A picture that glows or moves gets a lower number automatically. The picture must be on the screen.",
             "The button matches at 97%, so it is set to 91%: found every time, but a look-alike is not.", "Do it on the real screen where the picture really shows.", "Doing it on a different screen. It will say the match is too low.")
         t("pick_colour", "Pick Colour Again", "Draw the box again, then tap the picture to choose the exact colour. Fine-tune with the sliders or the hex box.",
             "Tap the green of a health bar to take exactly that green.", "Tap a spot in the middle of the colour, not on an edge where colours mix.")

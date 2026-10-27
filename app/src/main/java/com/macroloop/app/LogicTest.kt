@@ -233,8 +233,8 @@ object LogicTest {
             macro(step("a") { it.copy(onSuccess = listOf(link("l", "x"))) }, step("b"), step("x") { it.copy(linkedOnly = true) })
         }
 
-        check("A step marked 'only when linked' is skipped in the normal order", listOf("a", "b")) {
-            macro(step("a"), step("x") { it.copy(linkedOnly = true) }, step("b"))
+        check("A step marked 'only when linked' is skipped in the normal order when a link points to it", listOf("a", "b")) {
+            macro(step("a") { it.copy(onFail = listOf(link("l", "x"))) }, step("x") { it.copy(linkedOnly = true) }, step("b"))
         }
 
         check("A link as the fall back: If false runs the linked step, then the list goes on", listOf("a", "f", "b"),
@@ -252,7 +252,7 @@ object LogicTest {
         check("A link to a step inside a branch works too", listOf("a", "n")) {
             macro(
                 step("a") { it.copy(onSuccess = listOf(link("l", "n"))) },
-                step("holder") { it.copy(linkedOnly = true, onSuccess = listOf(step("n"))) },
+                step("holder") { it.copy(enabled = false, onSuccess = listOf(step("n"))) },
             )
         }
 
@@ -455,6 +455,10 @@ object LogicTest {
 
         scanCheck("Scan: a counter step counts as doing something", listOf(),
             m = scanned(step("c", StepType.COUNTER_ADD) { it.copy(text = "n") }))
+
+        check("A step marked 'only when linked' that nothing links to still runs in order", listOf("a", "x", "b")) {
+            macro(step("a"), step("x") { it.copy(linkedOnly = true) }, step("b"))
+        }
 
         val passed = cases.count { it.ok }
         val lines = ArrayList<String>()
