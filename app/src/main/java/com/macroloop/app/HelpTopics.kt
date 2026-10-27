@@ -160,7 +160,7 @@ object HelpTopics {
         t("more", "More", "Extra settings: timing and debug.")
         t("exit", "Exit", "Closes the editor.", "", "Choose Save and exit, or you can lose your changes.")
         t("random_setting", "Random Setting", "Adds small random pauses and tap offsets so taps are never exactly the same.", "", "Leave it on.")
-        t("debug_setting", "Debug Setting", "Draws a box where a picture was found while the macro runs.", "", "Turn it on while you test, off afterwards.")
+        t("debug_setting", "Debug Setting", "Show Detect Location draws a box where a picture was found. Show taps draws a ring where each tap is sent, so you can see if MacroLoop tapped and where.", "", "Turn them on while you test, off afterwards. If a step 'does not tap', Show taps tells you if the tap was sent.")
         t("btn_shrink", "Shrink button", "Folds the step list back into the round button.")
         t("btn_test", "Test button (green play)", "Runs the whole macro once, from the top.")
         t("btn_plus", "Plus button", "Adds a step. In Watchers it adds a new watcher.")

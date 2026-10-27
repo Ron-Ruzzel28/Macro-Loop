@@ -86,10 +86,12 @@ object MacroScheduler {
         return timesText(s.minutes) + ", " + daysText(s.days) + (if (s.durationMin > 0) ", max ${s.durationMin} min" else "")
     }
 
-    fun notify(ctx: Context, title: String, text: String) {
+    fun notify(ctx: Context, title: String, text: String, askCapture: Boolean = false) {
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Scheduled macros", NotificationManager.IMPORTANCE_HIGH))
-        val open = PendingIntent.getActivity(ctx, 9, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val intent = Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (askCapture) intent.putExtra(MainActivity.EXTRA_ASK_CAPTURE, true)
+        val open = PendingIntent.getActivity(ctx, if (askCapture) 10 else 9, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val n = android.app.Notification.Builder(ctx, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
@@ -150,6 +152,13 @@ object MacroScheduler {
         check("stuck settings survive saving", back.stuckSec == 30 && back.stuck.size == 1)
         check("the schedule survives saving", back.schedule == m.schedule)
         check("an old macro without the new fields still loads", Macro.fromJson(org.json.JSONObject("{\"id\":\"a\",\"name\":\"b\"}")).let { it.counters.isEmpty() && !it.schedule.enabled && it.stuckSec == 0 })
+        val click = Step(StepType.CLICK, x = 10, y = 20, capW = 2400, capH = 1080)
+        check("a plain tap needs no capture", !macroNeedsCapture(Macro("m", "t", steps = listOf(click))))
+        check("a picture step needs capture", macroNeedsCapture(Macro("m", "t", steps = listOf(Step(StepType.CLICK_IMAGE)))))
+        check("a turned-off picture condition does not", !macroNeedsCapture(Macro("m", "t", steps = listOf(click.copy(conditions = listOf(Condition(enabled = false)))))))
+        check("a watcher with a picture needs capture", macroNeedsCapture(Macro("m", "t", watchers = listOf(Step(StepType.WATCH, conditions = listOf(Condition()))))))
+        check("the stuck check needs capture", macroNeedsCapture(Macro("m", "t", steps = listOf(click), stuckSec = 30)))
+        check("a tap remembers the screen size it was made on", Step.fromJson(org.json.JSONObject(click.toJson().toString())).let { it.capW == 2400 && it.capH == 1080 && it.x == 10 })
         out.add(0, "Scheduler and saving: $passed of $total")
         return out
     }

@@ -49,6 +49,7 @@ class MacroService : AccessibilityService() {
         const val PREF_HUMAN = "human_timing"
         const val PREF_SHOW_DETECT = "show_detect"
         const val PREF_HIGHLIGHT = "highlight_success"
+        const val PREF_SHOW_TAPS = "show_taps"
         private const val DEFAULT_HOLD_MS = 60L
         private const val HOLD_SEGMENT_MS = 350L
         private const val FINGER_GAP_PX = 170
@@ -189,13 +190,31 @@ class MacroService : AccessibilityService() {
     }
 
     /** Also true when only a watcher looks at the screen, or the stuck check is on. */
-    fun needsCapture(macro: Macro): Boolean = needsCapture(macro.lists.flatten()) || macro.stuckSec > 0
+    fun needsCapture(macro: Macro): Boolean = macroNeedsCapture(macro)
+
+    /** Opens MacroLoop on Android's "start capturing" question, so one tap on Start fixes it. */
+    private fun askCapturePrompt() {
+        runCatching {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    .putExtra(MainActivity.EXTRA_ASK_CAPTURE, true),
+            )
+        }
+    }
 
     /** Checks the whole macro before it starts, so a setup problem is said at once and not after a long wait. */
     private fun preflight(macro: Macro): String? {
         val all = allSteps(macro.lists.flatten())
         if (needsCapture(macro) && !CaptureService.running) {
-            return "Screen capture is off. Open MacroLoop and press Edit Mode or Play Mode again, then tap Start."
+            return "Screen capture is off. Tap Start on the question that opens, then press Play again."
+        }
+        // The positions were saved with the phone held one way; held the other way every tap would land in the wrong place.
+        val b = Ui.screenBounds(wm)
+        val ref = all.firstOrNull { it.capW > 0 && it.capH > 0 }
+        if (ref != null && (ref.capW > ref.capH) != (b.width() > b.height())) {
+            return "This macro was made with the phone held " + (if (ref.capW > ref.capH) "sideways (landscape)" else "upright (portrait)") +
+                ". Turn the phone that way, then press Play again."
         }
         for (w in macro.watchers) {
             if (w.enabled && w.type == StepType.WATCH && w.conditions.none { it.enabled }) {
@@ -240,10 +259,12 @@ class MacroService : AccessibilityService() {
         val startedAt = SystemClock.elapsedRealtime()
         var result: String? = null
         val logged = startList == null           // test runs from the editor are not logged
+        var host: RunHost? = null
         runJob = scope.launch {
             val capture = CaptureService.instance
             var dog: Job? = null
             var limit: Job? = null
+            var capDog: Job? = null
             try {
                 if (maxMinutes > 0) {
                     limit = launch {
@@ -278,13 +299,29 @@ class MacroService : AccessibilityService() {
                 if (problem != null) {
                     result = "Stopped: $problem"
                     finish(result!!)
+                    if (problem.startsWith("Screen capture is off")) askCapturePrompt()
                     return@launch
                 }
-                capture?.fast = true
+                val looks = macroNeedsCapture(macro)
+                // If the capture is turned off while the macro runs, every picture step would quietly be skipped. Say so instead.
+                if (looks) capDog = launch {
+                    while (true) {
+                        delay(2000)
+                        if (!CaptureService.running) {
+                            result = "Stopped: screen capture was turned off while the macro ran. Tap Start on the question, then press Play again."
+                            finish(result!!)
+                            askCapturePrompt()
+                            runJob?.cancel()
+                            break
+                        }
+                    }
+                }
+                capture?.fast = looks
                 // A short pause lets Android finish hiding the editor or the Play button,
                 // so the first tap does not land on a window that is still there.
                 delay(START_SETTLE_MS)
-                val end = FlowEngine(RunHost(macro.name, macro.scan)).run(macro, startList, rounds)
+                host = RunHost(macro.name, macro.scan)
+                val end = FlowEngine(host!!).run(macro, startList, rounds)
                 result = end ?: "Finished: ${macro.name}"
                 finish(result!!)
             } catch (e: CancellationException) {
@@ -292,11 +329,12 @@ class MacroService : AccessibilityService() {
             } finally {
                 dog?.cancel()
                 limit?.cancel()
+                capDog?.cancel()
                 capture?.fast = false
                 if (logged) {
                     val text = result ?: "Stopped by you."
                     val problem = text.startsWith("Stopped:") && !text.startsWith("Stopped by a Stop step")
-                    RunLog.add(macro.name, text, problem, ((SystemClock.elapsedRealtime() - startedAt) / 1000).toInt(), if (problem) CaptureService.grab() else null)
+                    RunLog.add(macro.name, text, problem, ((SystemClock.elapsedRealtime() - startedAt) / 1000).toInt(), if (problem) CaptureService.grab() else null, host?.logText().orEmpty())
                 }
                 onFinished?.invoke()
             }
@@ -351,6 +389,53 @@ class MacroService : AccessibilityService() {
 
         private fun template(id: String): Bitmap? = templates.getOrPut(id) { TemplateStore.load(id) }
 
+        // ---- the log: what happened, with repeats folded ("... x40"), the last 60 lines kept
+        private val lines = ArrayDeque<String>()
+        private var repeats = 1
+        private val t0 = SystemClock.elapsedRealtime()
+
+        private var lastText = ""
+
+        override fun note(text: String) {
+            val secs = (SystemClock.elapsedRealtime() - t0) / 1000
+            val at = "%d:%02d".format(secs / 60, secs % 60)
+            if (text == lastText && lines.isNotEmpty()) {
+                repeats++
+                lines.removeLast()
+                lines.addLast("$at  $text  x$repeats")
+                return
+            }
+            lastText = text
+            repeats = 1
+            lines.addLast("$at  $text")
+            while (lines.size > 60) lines.removeFirst()
+        }
+
+        fun logText(): String = lines.joinToString("\n")
+
+        /** How a saved position maps onto this screen (the phone may be a different size). Null: the phone is held the other way. */
+        private fun fit(step: Step): Pair<Double, Double>? {
+            if (step.capW <= 0 || step.capH <= 0) return 1.0 to 1.0
+            val b = Ui.screenBounds(wm)
+            if ((b.width() > b.height()) != (step.capW > step.capH)) return null
+            return b.width().toDouble() / step.capW to b.height().toDouble() / step.capH
+        }
+
+        private fun wrongWay(where: String) =
+            Outcome.Fatal("Stopped: step $where was made with the phone held the other way. Turn the phone and press Play again.")
+
+        private suspend fun clickStep(step: Step, where: String): Outcome {
+            val f = fit(step) ?: return wrongWay(where)
+            return clickAt(step, (step.x * f.first).toInt() + step.offsetX, (step.y * f.second).toInt() + step.offsetY, where)
+        }
+
+        private suspend fun swipeStep(step: Step, where: String): Outcome {
+            val f = fit(step) ?: return wrongWay(where)
+            val s = step.copy(x = (step.x * f.first).toInt(), y = (step.y * f.second).toInt(), x2 = (step.x2 * f.first).toInt(), y2 = (step.y2 * f.second).toInt())
+            note("swipe (${s.x}, ${s.y}) to (${s.x2}, ${s.y2})")
+            return if (swipe(s, human)) Outcome.Ok else Outcome.Fatal("Stopped: the swipe in step $where was cancelled by Android.")
+        }
+
         private var cachedFrame: Bitmap? = null
         private var cachedAt = -1L
         private var lastActionAt = 0L
@@ -379,9 +464,8 @@ class MacroService : AccessibilityService() {
         }
 
         private suspend fun doPerform(step: Step, where: String): Outcome = when (step.type) {
-            StepType.CLICK -> clickAt(step, step.x + step.offsetX, step.y + step.offsetY, where)
-            StepType.SWIPE ->
-                if (swipe(step, human)) Outcome.Ok else Outcome.Fatal("Stopped: the swipe in step $where was cancelled by Android.")
+            StepType.CLICK -> clickStep(step, where)
+            StepType.SWIPE -> swipeStep(step, where)
             StepType.CLICK_IMAGE -> runPictureStep(where, step)
             StepType.PRESS_BACK -> global(GLOBAL_ACTION_BACK, "Press Back", where)
             StepType.PRESS_HOME -> global(GLOBAL_ACTION_HOME, "Press Home", where)
@@ -492,10 +576,17 @@ class MacroService : AccessibilityService() {
 
         private suspend fun clickAt(step: Step, x: Int, y: Int, where: String): Outcome {
             if (step.holdUntil != null) return holdUntilTap(step, x, y, where)
+            flashTap(x, y)
             for (n in 1..step.clicks) {
                 if (!tapOnce(x, y, step, human)) {
-                    return Outcome.Fatal("Stopped: the tap in step $where was cancelled by Android.")
+                    // Android turns a tap down now and then (another touch at the same moment). Once more, then say so.
+                    delay(120)
+                    if (!tapOnce(x, y, step, human)) {
+                        note("Android refused the tap at ($x, $y)")
+                        return Outcome.Fatal("Stopped: the tap in step $where was cancelled by Android.")
+                    }
                 }
+                note("tapped ($x, $y)")
                 if (n < step.clicks) {
                     val gap = step.clickGapMs.coerceAtLeast(20)
                     delay(if (human) (gap * Random.nextDouble(0.85, 1.2)).toLong() else gap)
@@ -569,6 +660,7 @@ class MacroService : AccessibilityService() {
             while (true) {
                 val frame = sharedFrame()
                 if (frame != null) {
+                    if (step.capW > 0 && step.capH > 0 && (frame.width > frame.height) != (step.capW > step.capH)) return wrongWay(where)
                     val scale = if (step.capW > 0) frame.width.toDouble() / step.capW else 1.0
                     val region = if (step.wholeScreen) null
                     else Matcher.nearRegion(step.boxX, step.boxY, step.boxW, step.boxH, scale, frame.width, frame.height)
@@ -612,6 +704,36 @@ class MacroService : AccessibilityService() {
                 "Stopped: couldn't find \"${step.label.ifBlank { "the picture" }}\" for ${limitMs / 1000} s. " +
                     "Best match was ${(bestScore * 100).toInt()}%, needed ${step.threshold}%.",
             )
+        }
+    }
+
+    /** A ring where a tap was sent, if "Show taps" is on in Debug Setting. It cannot be touched, so it never gets in the way. */
+    private fun flashTap(x: Int, y: Int) {
+        if (!getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_SHOW_TAPS, false)) return
+        val size = Ui.dp(this, 44)
+        val v = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x66FFFFFF)
+                setStroke(Ui.dp(this@MacroService, 3), TokenInts.warning)
+            }
+        }
+        val lp = WindowManager.LayoutParams(
+            size, size,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            this.x = x - size / 2
+            this.y = y - size / 2
+        }
+        runCatching { wm.addView(v, lp) }.onSuccess {
+            scope.launch {
+                delay(350)
+                runCatching { wm.removeView(v) }
+            }
         }
     }
 

@@ -21,6 +21,7 @@ object RunLog {
         val problem: Boolean,
         val seconds: Int,
         val shot: String,       // file name of the last-screen picture, or ""
+        val detail: String = "",   // the last things that happened: taps, skipped steps and why
     )
 
     val entries = mutableStateListOf<Entry>()
@@ -35,13 +36,13 @@ object RunLog {
             val a = JSONArray(file.readText())
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)
-                entries.add(Entry(o.getLong("time"), o.getString("macro"), o.getString("result"), o.optBoolean("problem"), o.optInt("seconds"), o.optString("shot")))
+                entries.add(Entry(o.getLong("time"), o.getString("macro"), o.getString("result"), o.optBoolean("problem"), o.optInt("seconds"), o.optString("shot"), o.optString("detail")))
             }
         }
     }
 
     /** Adds a run to the top of the log. [frame] is the screen at the end, kept only for a problem. */
-    fun add(macro: String, result: String, problem: Boolean, seconds: Int, frame: Bitmap?) {
+    fun add(macro: String, result: String, problem: Boolean, seconds: Int, frame: Bitmap?, detail: String = "") {
         if (!::dir.isInitialized) return
         val time = System.currentTimeMillis()
         var shot = ""
@@ -50,7 +51,7 @@ object RunLog {
             runCatching { File(dir, shot).outputStream().use { frame.compress(Bitmap.CompressFormat.JPEG, 70, it) } }
                 .onFailure { shot = "" }
         }
-        entries.add(0, Entry(time, macro, result, problem, seconds, shot))
+        entries.add(0, Entry(time, macro, result, problem, seconds, shot, detail))
         while (entries.size > KEEP) {
             val old = entries.removeAt(entries.lastIndex)
             if (old.shot.isNotEmpty()) File(dir, old.shot).delete()
@@ -70,7 +71,7 @@ object RunLog {
         val a = JSONArray()
         entries.forEach {
             a.put(JSONObject().put("time", it.time).put("macro", it.macro).put("result", it.result)
-                .put("problem", it.problem).put("seconds", it.seconds).put("shot", it.shot))
+                .put("problem", it.problem).put("seconds", it.seconds).put("shot", it.shot).put("detail", it.detail))
         }
         runCatching { file.writeText(a.toString()) }
     }

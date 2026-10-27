@@ -239,6 +239,16 @@ data class Step(
     }
 }
 
+/** True when the macro looks at the screen anywhere (a picture, colour or words, a watcher or the stuck check). */
+fun macroNeedsCapture(m: Macro): Boolean {
+    fun walk(l: List<Step>): Boolean = l.any { s ->
+        (s.enabled && (s.type == StepType.CLICK_IMAGE || s.holdUntil != null)) ||
+            s.conditions.any { it.enabled && (it.kind == ConditionKind.IMAGE || it.kind == ConditionKind.COLOR || it.kind == ConditionKind.TEXT) } ||
+            walk(s.onSuccess) || walk(s.onFail)
+    }
+    return m.lists.any { walk(it) } || m.stuckSec > 0
+}
+
 /** A named number a macro can count with. [keep] = it is remembered between runs (and days) instead of starting at 0 each run. */
 data class CounterDef(val name: String, val keep: Boolean = false)
 

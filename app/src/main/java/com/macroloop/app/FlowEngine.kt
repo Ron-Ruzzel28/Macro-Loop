@@ -56,6 +56,9 @@ interface StepHost {
 
     fun status(text: String)
 
+    /** A line for the run's log: what happened, or why a step did nothing. Repeats are folded by the host. */
+    fun note(text: String) {}
+
     /** A new look at a step's conditions begins: forget the colours that "changes" conditions compare against. */
     fun resetBaselines() {}
 
@@ -222,8 +225,14 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
     private suspend fun runStep(
         macroName: String, where: String, step: Step, prevOk: Boolean, state: RunState, viaLink: Boolean = false,
     ): StepResult {
-        if (!step.enabled) return StepResult(Flow.Next, prevOk)
-        if (step.linkedOnly && !viaLink) return StepResult(Flow.Next, prevOk)
+        if (!step.enabled) {
+            host.note("step $where is turned off, so it was skipped")
+            return StepResult(Flow.Next, prevOk)
+        }
+        if (step.linkedOnly && !viaLink) {
+            host.note("step $where is set to \"run only when linked\", so it was skipped")
+            return StepResult(Flow.Next, prevOk)
+        }
         when (step.type) {
             StepType.LINK -> return runLink(macroName, where, step, prevOk, state)
             StepType.WAIT -> {
@@ -268,11 +277,17 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                 val flow = if (step.onSuccess.isNotEmpty()) runList(macroName, step.onSuccess, "$where on success", state) else Flow.Next
                 StepResult(flow, true)
             }
-            is Outcome.Fatal -> StepResult(Flow.Stop(o.message), false)
-            is Outcome.Missing -> when {
+            is Outcome.Fatal -> {
+                host.note(o.message.removePrefix("Stopped: "))
+                StepResult(Flow.Stop(o.message), false)
+            }
+            is Outcome.Missing -> {
+                host.note("step $where skipped: " + o.message.removePrefix("Stopped: "))
+                when {
                 step.onFail.isNotEmpty() -> StepResult(runList(macroName, step.onFail, "$where on fail", state), false)
                 step.skipIfMissing || state.scan -> StepResult(Flow.Next, false)
                 else -> StepResult(Flow.Stop(o.message), false)
+                }
             }
         }
     }

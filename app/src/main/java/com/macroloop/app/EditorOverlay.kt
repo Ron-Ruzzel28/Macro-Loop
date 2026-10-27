@@ -81,6 +81,51 @@ class EditorOverlay(
 
     private fun later(f: () -> Unit) { android.os.Handler(android.os.Looper.getMainLooper()).post { f() } }
     private var dirty = false
+        set(v) {
+            field = v
+            if (v) scheduleDraft()
+        }
+
+    // ---- drafts: a copy of the edit is kept a moment after each change, so a closed or stopped app loses nothing
+    private val draftHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val draftTask = Runnable { DraftStore.save(current()) }
+
+    private fun scheduleDraft() {
+        draftHandler.removeCallbacks(draftTask)
+        draftHandler.postDelayed(draftTask, 1500)
+    }
+
+    private fun dropDraft() {
+        draftHandler.removeCallbacks(draftTask)
+        DraftStore.clear(macroId)
+    }
+
+    /** If an earlier edit of this macro was never saved, offers to bring it back. Returns true when it asked. */
+    private fun offerDraft(): Boolean {
+        DraftStore.init(ctx)
+        val d = DraftStore.load(macroId) ?: return false
+        val a = d.copy(updatedAt = 0).toJson().toString()
+        val b = base.copy(updatedAt = 0).toJson().toString()
+        if (a == b) {
+            DraftStore.clear(macroId)
+            return false
+        }
+        showDialogBox("Unsaved changes found") { box ->
+            box.addView(label("This macro was being edited and the changes were not saved. Bring them back?", 14f, TokenInts.textMuted), lp(8))
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
+            row.addView(textButton("DISCARD") { DraftStore.clear(macroId); closeMenu() })
+            row.addView(textButton("BRING BACK") {
+                mainSteps = d.steps; watchers = d.watchers; stuck = d.stuck; counters = d.counters
+                stuckSec = d.stuckSec; schedule = d.schedule; scan = d.scan
+                dirty = true
+                closeMenu()
+                refreshPanelIfOpen()
+                toast("Changes brought back. Press Save to keep them.")
+            })
+            box.addView(row, lp(12))
+        }
+        return true
+    }
     private var clipboard: Step? = null
 
     // read fresh each time, so a turned phone gets menus that fit
@@ -172,7 +217,10 @@ class EditorOverlay(
     fun show() {
         addChip()
         val prefs = ctx.getSharedPreferences(MacroService.PREFS, Context.MODE_PRIVATE)
-        if (!prefs.getBoolean("tour_done", false)) {
+        DraftStore.init(ctx)
+        if (DraftStore.load(macroId) != null) {
+            later { offerDraft() }
+        } else if (!prefs.getBoolean("tour_done", false)) {
             prefs.edit().putBoolean("tour_done", true).apply()
             later { HelpTopics.byId("tour")?.let { showHelp(it, tour = true) } }
         }
@@ -278,6 +326,9 @@ class EditorOverlay(
         rm(chip); chip = null
         rm(helpView); helpView = null
         CaptureService.instance?.fast = false
+        // closed while there were unsaved changes (for example the app was closed): keep them as a draft
+        draftHandler.removeCallbacks(draftTask)
+        if (dirty) DraftStore.save(current())
     }
 
     private fun rm(v: View?) {
@@ -391,6 +442,9 @@ class EditorOverlay(
             box.addView(checkBox("Highlight Success Detection", prefs.getBoolean(MacroService.PREF_HIGHLIGHT, false)) { on ->
                 prefs.edit().putBoolean(MacroService.PREF_HIGHLIGHT, on).apply()
             }, lp(4))
+            box.addView(checkBox("Show taps (a ring where each tap is sent)", prefs.getBoolean(MacroService.PREF_SHOW_TAPS, false)) { on ->
+                prefs.edit().putBoolean(MacroService.PREF_SHOW_TAPS, on).apply()
+            }, lp(4))
             box.addView(textButton("CLOSE") { closeMenu() }, lp(8))
         }
     }
@@ -405,7 +459,7 @@ class EditorOverlay(
             }
             row.addView(textButton("SAVE AND EXIT") { save(); onClosed() })
             row.addView(textButton("CANCEL") { closeMenu() })
-            row.addView(textButton("EXIT") { onClosed() })
+            row.addView(textButton("EXIT") { dirty = false; dropDraft(); onClosed() })
             box.addView(row, lp(12))
         }
     }
@@ -1137,8 +1191,8 @@ class EditorOverlay(
 
     private fun createStep(kind: StepType, target: Target) {
         when (kind) {
-            StepType.CLICK -> pickSpot("Tap where the macro should tap") { x, y -> finishAdd(target, Step(StepType.CLICK, x = x, y = y)) }
-            StepType.SWIPE -> pickSwipe { x1, y1, x2, y2 -> finishAdd(target, Step(StepType.SWIPE, x = x1, y = y1, x2 = x2, y2 = y2)) }
+            StepType.CLICK -> pickSpot("Tap where the macro should tap") { x, y -> finishAdd(target, Step(StepType.CLICK, x = x, y = y, capW = screenW, capH = screenH)) }
+            StepType.SWIPE -> pickSwipe { x1, y1, x2, y2 -> finishAdd(target, Step(StepType.SWIPE, x = x1, y = y1, x2 = x2, y2 = y2, capW = screenW, capH = screenH)) }
             StepType.CLICK_IMAGE -> newOrExist { box, id, fw, fh ->
                 val n = flat(root).count { it.type == StepType.CLICK_IMAGE } + 1
                 finishAdd(target, Step(
@@ -2615,9 +2669,9 @@ class EditorOverlay(
         startOverlay(layer)
     }
 
-    private fun moveSpot(ref: Ref) = pickSpot("Tap the new spot") { x, y -> edit(ref) { it.copy(x = x, y = y) }; refreshPanel() }
+    private fun moveSpot(ref: Ref) = pickSpot("Tap the new spot") { x, y -> edit(ref) { it.copy(x = x, y = y, capW = screenW, capH = screenH) }; refreshPanel() }
 
-    private fun redrawSwipe(ref: Ref) = pickSwipe { x1, y1, x2, y2 -> edit(ref) { it.copy(x = x1, y = y1, x2 = x2, y2 = y2) }; refreshPanel() }
+    private fun redrawSwipe(ref: Ref) = pickSwipe { x1, y1, x2, y2 -> edit(ref) { it.copy(x = x1, y = y1, x2 = x2, y2 = y2, capW = screenW, capH = screenH) }; refreshPanel() }
 
     // ================================================================ tests
 
@@ -2727,6 +2781,7 @@ class EditorOverlay(
     private fun save() {
         MacroRepository.save(current())
         dirty = false
+        dropDraft()
         // delete picture files nothing uses any more
         val used = HashSet<String>()
         for (m in MacroRepository.macros) for (s in flat(m.lists.flatten())) {

@@ -113,6 +113,16 @@ class MainActivity : ComponentActivity() {
         returnAfterCapture = false
     }
 
+    private val notifLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    /** The other apps that have an accessibility service switched on. Two automation apps at once can fight over taps. */
+    private fun otherAccessibilityApps(): List<String> {
+        val raw = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return emptyList()
+        return raw.split(':').mapNotNull { android.content.ComponentName.unflattenFromString(it)?.packageName }
+            .filter { it != packageName }.distinct()
+            .map { pkg -> runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg) }
+    }
+
     private val importPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importFrom(uri)
     }
@@ -213,6 +223,17 @@ class MainActivity : ComponentActivity() {
         TemplateStore.init(applicationContext)
         License.init(applicationContext)
         RunLog.init(applicationContext)
+        DraftStore.init(applicationContext)
+        // Android 13 and later: without this, MacroLoop's notices (capture stopped, a scheduled start skipped) are hidden.
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            val p = getSharedPreferences(MacroService.PREFS, MODE_PRIVATE)
+            if (!p.getBoolean("asked_notif", false)) {
+                p.edit().putBoolean("asked_notif", true).apply()
+                notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
         setContent { MacroLoopTheme { App() } }
         if (savedInstanceState == null) handleIntent(intent)
     }
@@ -305,6 +326,37 @@ class MainActivity : ComponentActivity() {
                 }
             }
             LicenseBanner(onAccount)
+            if (accessibilityOn && MacroRepository.macros.any { macroNeedsCapture(it) } && !CaptureService.running) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Tokens.surface),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("Screen capture is off", fontSize = 18.sp, color = Tokens.warning, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Your macros look at the screen, so they need it. Android turns it off when MacroLoop is closed.",
+                            fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        PrimaryButton("Turn on") { askForCapture() }
+                    }
+                }
+            }
+            val lastRun = RunLog.entries.firstOrNull()
+            if (lastRun != null && lastRun.problem && System.currentTimeMillis() - lastRun.time < 30 * 60_000L) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Tokens.surface),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).clickable { onLog() },
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("Last run stopped: ${lastRun.macro}", fontSize = 16.sp, color = Tokens.danger, fontWeight = FontWeight.SemiBold)
+                        Text(lastRun.result, fontSize = 13.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
+                        Text("Tap to see what happened", fontSize = 12.sp, color = Tokens.primary, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+            }
             if (!accessibilityOn) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Tokens.surface),
@@ -808,6 +860,24 @@ class MainActivity : ComponentActivity() {
                 }
                 if (guide) RestrictedGuide()
             }
+            val others = remember(accessibilityOn) { otherAccessibilityApps() }
+            if (others.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Tokens.surface),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Other apps with accessibility on", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Tokens.text)
+                        Text(others.joinToString(", "), fontSize = 14.sp, color = Tokens.primary, modifier = Modifier.padding(top = 2.dp))
+                        Text(
+                            "If MacroLoop's taps act strangely, turn the other apps off in Accessibility settings. Two apps that tap or draw over the screen at the same time can get in each other's way.",
+                            fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(12.dp))
             SetupRow(
                 title = "Don't let the battery saver stop it",
@@ -897,6 +967,10 @@ class MainActivity : ComponentActivity() {
                             Text("${e.macro}  ·  ${fmt.format(java.util.Date(e.time))}", fontSize = 15.sp, color = Tokens.text, fontWeight = FontWeight.SemiBold)
                             Text(e.result, fontSize = 14.sp, color = if (e.problem) Tokens.danger else Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
                             Text("${e.seconds} s", fontSize = 12.sp, color = Tokens.textMuted)
+                            if (open == e.time && e.detail.isNotBlank()) {
+                                Text("What happened (latest at the bottom):", fontSize = 12.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 8.dp))
+                                Text(e.detail, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Tokens.text, modifier = Modifier.padding(top = 2.dp))
+                            }
                             if (open == e.time) {
                                 val shot = remember(e.shot) {
                                     RunLog.shotFile(e)?.let { f -> android.graphics.BitmapFactory.decodeFile(f.path)?.asImageBitmap() }

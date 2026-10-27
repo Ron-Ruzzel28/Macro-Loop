@@ -43,8 +43,8 @@ class CaptureService : Service() {
         var instance: CaptureService? = null
             private set
 
-        /** A private copy of the newest frame, or null if none yet. */
-        fun grab(): Bitmap? = instance?.copyFrame()
+        /** A private copy of the newest frame, or null if none yet. Asking for the screen also wakes the capture if it was resting. */
+        fun grab(): Bitmap? = instance?.also { it.needed() }?.copyFrame()
 
         /**
          * Like [grab], but waits (up to [maxWaitMs]) for a frame taken after [sinceMs]
@@ -54,6 +54,8 @@ class CaptureService : Service() {
          */
         suspend fun grabFresh(sinceMs: Long, maxWaitMs: Long = 300): Bitmap? {
             val svc = instance ?: return null
+            svc.needed()
+            if (svc.lastFrameAt < svc.resumedAt) waitFrame(svc.resumedAt, RESUME_WAIT_MS)
             val limit = SystemClock.elapsedRealtime() + maxWaitMs
             while (svc.lastFrameAt < sinceMs && SystemClock.elapsedRealtime() < limit) {
                 kotlinx.coroutines.delay(20)
@@ -64,9 +66,13 @@ class CaptureService : Service() {
         /** When the newest frame was taken (SystemClock.elapsedRealtime). */
         fun frameAt(): Long = instance?.lastFrameAt ?: 0L
 
+        private const val IDLE_PAUSE_MS = 6000L
+        private const val RESUME_WAIT_MS = 700L
+
         /** Waits (up to [maxWaitMs]) until a frame newer than [sinceMs] exists. A still screen sends none, so the wait is capped. */
         suspend fun waitFrame(sinceMs: Long, maxWaitMs: Long) {
             val svc = instance ?: return
+            svc.needed()
             val limit = SystemClock.elapsedRealtime() + maxWaitMs
             while (svc.lastFrameAt < sinceMs && SystemClock.elapsedRealtime() < limit) kotlinx.coroutines.delay(10)
         }
@@ -81,6 +87,7 @@ class CaptureService : Service() {
     var fast = false
 
     private var projection: MediaProjection? = null
+    private var projCallback: MediaProjection.Callback? = null
     private var reader: ImageReader? = null
     private var display: VirtualDisplay? = null
     private var thread: HandlerThread? = null
@@ -123,12 +130,16 @@ class CaptureService : Service() {
         val handler = Handler(t.looper)
         handlerRef = handler
 
-        proj.registerCallback(object : MediaProjection.Callback() {
+        val cb = object : MediaProjection.Callback() {
             override fun onStop() {
+                // Android (or the user, from the status bar) ended the capture. Say so, and how to turn it back on.
                 teardown()
                 stopSelf()
+                MacroScheduler.notify(applicationContext, "Screen capture stopped", "Tap here to turn it back on. Macros that look at the screen need it.", askCapture = true)
             }
-        }, handler)
+        }
+        projCallback = cb
+        proj.registerCallback(cb, handler)
 
         reader = newReader(handler)
         val r = reader!!
@@ -141,10 +152,46 @@ class CaptureService : Service() {
         )
         instance = this
         running = true
+        lastNeededAt = SystemClock.elapsedRealtime()
+        paused = false
+        handler.postDelayed(idleTick, 2000)
         return START_NOT_STICKY
     }
 
     private var handlerRef: Handler? = null
+
+    // ---- resting: with nothing looking at the screen, the mirroring is switched off, so other apps and games do not lag
+    @Volatile private var lastNeededAt = 0L
+    @Volatile private var paused = false
+    @Volatile private var resumedAt = 0L
+
+    private val idleTick = object : Runnable {
+        override fun run() {
+            if (!paused && !fast && SystemClock.elapsedRealtime() - lastNeededAt > IDLE_PAUSE_MS) pauseNow()
+            handlerRef?.postDelayed(this, 2000)
+        }
+    }
+
+    /** Something is about to look at the screen: wake the mirroring if it was resting. */
+    fun needed() {
+        lastNeededAt = SystemClock.elapsedRealtime()
+        if (paused) resumeNow()
+    }
+
+    @Synchronized
+    private fun pauseNow() {
+        if (paused) return
+        paused = true
+        runCatching { display?.surface = null }
+    }
+
+    @Synchronized
+    private fun resumeNow() {
+        if (!paused) return
+        paused = false
+        resumedAt = SystemClock.elapsedRealtime()
+        runCatching { display?.surface = reader?.surface }
+    }
 
     /** The screen's real size in the way it is held right now. */
     @Suppress("DEPRECATION")
@@ -205,7 +252,7 @@ class CaptureService : Service() {
         }
         settleUntil = SystemClock.elapsedRealtime() + 450   // the first pictures after a turn can be blank
         runCatching { d.resize(width, height, resources.displayMetrics.densityDpi) }
-        runCatching { d.surface = r.surface }
+        if (!paused) runCatching { d.surface = r.surface }
         old?.setOnImageAvailableListener(null, null)
         runCatching { old?.close() }
     }
@@ -256,6 +303,7 @@ class CaptureService : Service() {
     }
 
     private fun copyFrame(): Bitmap? = synchronized(lock) {
+        if (lastFrameAt < resumedAt) return null        // woken from rest and no new picture yet: the old one may be out of date
         val b = buffer ?: return null
         val cropped = if (b.width != width) Bitmap.createBitmap(b, 0, 0, width, height) else b.copy(Bitmap.Config.ARGB_8888, false)
         cropped
@@ -284,8 +332,11 @@ class CaptureService : Service() {
             pending = null
             convertScheduled = false
         }
+        handlerRef?.removeCallbacks(idleTick)
         runCatching { display?.release() }; display = null
         runCatching { r?.close() }
+        projCallback?.let { cb -> runCatching { projection?.unregisterCallback(cb) } }
+        projCallback = null
         runCatching { projection?.stop() }
         projection = null
         thread?.quitSafely(); thread = null
