@@ -2292,7 +2292,14 @@ class EditorOverlay(
         scope.launch {
             CaptureService.instance?.fast = true
             delay(450)
-            val frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 100, 400)
+            var frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 100, 400)
+            // A flat white (or flat black) picture means the screen was not ready: look again, up to 4 times.
+            var tries = 0
+            while (frame != null && ScreenCheck.isBlank(frame) && tries < 4) {
+                tries++
+                delay(350)
+                frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 100, 500)
+            }
             CaptureService.instance?.fast = false
             if (frame == null) {
                 toast("Could not see the screen. Try again.")

@@ -103,9 +103,9 @@ class CaptureService : Service() {
         }
         projection = proj
 
-        val bounds = Ui.screenBounds(getSystemService(Context.WINDOW_SERVICE) as WindowManager)
-        width = bounds.width()
-        height = bounds.height()
+        val size = realSize()
+        width = size.first
+        height = size.second
         val dpi = resources.displayMetrics.densityDpi
 
         val t = HandlerThread("capture").also { it.start() }
@@ -120,16 +120,8 @@ class CaptureService : Service() {
             }
         }, handler)
 
-        val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        reader = r
-        r.setOnImageAvailableListener({ ir ->
-            val image = ir.acquireLatestImage() ?: return@setOnImageAvailableListener
-            synchronized(lock) {
-                pending?.close()
-                pending = image
-            }
-            scheduleConvert(handler)
-        }, handler)
+        reader = newReader(handler)
+        val r = reader!!
 
         display = proj.createVirtualDisplay(
             "macroloop",
@@ -144,33 +136,68 @@ class CaptureService : Service() {
 
     private var handlerRef: Handler? = null
 
+    /** The screen's real size in the way it is held right now. */
+    @Suppress("DEPRECATION")
+    private fun realSize(): Pair<Int, Int> {
+        val dm = android.util.DisplayMetrics()
+        val d = (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).getDisplay(android.view.Display.DEFAULT_DISPLAY)
+        d.getRealMetrics(dm)
+        return dm.widthPixels to dm.heightPixels
+    }
+
+    /**
+     * A reader for the current size. A picture that arrives from a reader that is no longer the current one
+     * is thrown away, and a reader that is already closed can never crash the app.
+     */
+    private fun newReader(handler: Handler): ImageReader {
+        val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        r.setOnImageAvailableListener({ ir ->
+            val image = try { ir.acquireLatestImage() } catch (e: Exception) { null } ?: return@setOnImageAvailableListener
+            var keep = false
+            synchronized(lock) {
+                if (ir === reader) {
+                    pending?.let { runCatching { it.close() } }
+                    pending = image
+                    keep = true
+                }
+            }
+            if (keep) scheduleConvert(handler) else runCatching { image.close() }
+        }, handler)
+        return r
+    }
+
+    @Volatile
+    private var settleUntil = 0L
+
     /** When the phone is turned, the captured picture must turn with it, or every position would be wrong. */
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        val d = display ?: return
         val handler = handlerRef ?: return
-        val b = Ui.screenBounds(getSystemService(Context.WINDOW_SERVICE) as WindowManager)
-        if (b.width() == width && b.height() == height) return
+        // On the capture thread, so it can never run in the middle of reading a picture.
+        handler.post { resizeCapture(handler) }
+    }
+
+    private fun resizeCapture(handler: Handler) {
+        val d = display ?: return
+        val size = realSize()
+        if (size.first == width && size.second == height) return
+        val old = reader
         synchronized(lock) {
-            width = b.width()
-            height = b.height()
-            pending?.close(); pending = null
+            width = size.first
+            height = size.second
             buffer?.recycle(); buffer = null
         }
-        val old = reader
-        val r = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        r.setOnImageAvailableListener({ ir ->
-            val image = ir.acquireLatestImage() ?: return@setOnImageAvailableListener
-            synchronized(lock) {
-                pending?.close()
-                pending = image
-            }
-            scheduleConvert(handler)
-        }, handler)
-        reader = r
-        d.resize(width, height, resources.displayMetrics.densityDpi)
-        d.surface = r.surface
-        old?.close()
+        val r = newReader(handler)
+        synchronized(lock) {
+            reader = r                                   // from here, pictures from the old reader are thrown away
+            pending?.let { runCatching { it.close() } }
+            pending = null
+        }
+        settleUntil = SystemClock.elapsedRealtime() + 450   // the first pictures after a turn can be blank
+        runCatching { d.resize(width, height, resources.displayMetrics.densityDpi) }
+        runCatching { d.surface = r.surface }
+        old?.setOnImageAvailableListener(null, null)
+        runCatching { old?.close() }
     }
 
     /** Converts the newest image after the minimum gap, so the last change on screen is never dropped. */
@@ -187,6 +214,13 @@ class CaptureService : Service() {
     private fun convertPending() {
         synchronized(lock) {
             convertScheduled = false
+            if (pending == null) return
+            val wait = settleUntil - SystemClock.elapsedRealtime()
+            if (wait > 0) {                                  // just turned: look again a little later
+                convertScheduled = true
+                handlerRef?.postDelayed({ convertPending() }, wait)
+                return
+            }
             val image = pending ?: return
             pending = null
             try {
@@ -203,8 +237,10 @@ class CaptureService : Service() {
                 plane.buffer.rewind()
                 buf!!.copyPixelsFromBuffer(plane.buffer)
                 lastFrameAt = SystemClock.elapsedRealtime()
+            } catch (e: Exception) {
+                // a picture that went bad (the reader was closed, the size just changed): skip it
             } finally {
-                image.close()
+                runCatching { image.close() }
             }
         }
     }
@@ -230,15 +266,21 @@ class CaptureService : Service() {
     private fun teardown() {
         running = false
         instance = null
-        display?.release(); display = null
-        reader?.setOnImageAvailableListener(null, null)
-        reader?.close(); reader = null
+        val r = reader
+        r?.setOnImageAvailableListener(null, null)
+        synchronized(lock) {
+            reader = null
+            pending?.let { runCatching { it.close() } }
+            pending = null
+            convertScheduled = false
+        }
+        runCatching { display?.release() }; display = null
+        runCatching { r?.close() }
         runCatching { projection?.stop() }
         projection = null
         thread?.quitSafely(); thread = null
+        handlerRef = null
         synchronized(lock) {
-            pending?.close(); pending = null
-            convertScheduled = false
             buffer?.recycle(); buffer = null
         }
     }

@@ -95,6 +95,18 @@ object ScreenCheck {
         return w.isNotEmpty() && norm(read).contains(w)
     }
 
+    /** True when the whole picture is one flat colour: a screen that was not ready yet, not a real screen. */
+    fun isBlank(frame: Bitmap): Boolean {
+        var lo = 255; var hi = 0
+        for (iy in 1..12) for (ix in 1..8) {
+            val p = frame.getPixel(frame.width * ix / 9, frame.height * iy / 13)
+            val v = maxOf((p shr 16) and 255, (p shr 8) and 255, p and 255)
+            lo = minOf(lo, v); hi = maxOf(hi, v)
+            if (hi - lo > 6) return false
+        }
+        return true
+    }
+
     fun hex(color: Int) = "#%06X".format(color and 0xFFFFFF)
 
     fun colorChanged(base: Int, now: Int, tolerancePct: Int) = abs(distancePct(base, now)) > tolerancePct
@@ -131,6 +143,8 @@ object ScreenCheck {
         val read = readText(words, Rect(0, 0, 600, 200))
         check("text is read (\"$read\")", textMatches(read, "claim reward"))
         check("other words are not found", !textMatches(read, "level up"))
+        check("a flat white picture is blank", isBlank(Bitmap.createBitmap(200, 400, Bitmap.Config.ARGB_8888).also { it.eraseColor(0xFFFFFFFF.toInt()) }))
+        check("a real screen is not blank", !isBlank(bmp))
         out.add(0, "Screen checks: $passed of $total")
         return out
     }
