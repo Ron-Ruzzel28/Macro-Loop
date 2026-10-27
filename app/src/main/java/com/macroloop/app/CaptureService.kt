@@ -61,6 +61,16 @@ class CaptureService : Service() {
             return svc.copyFrame()
         }
 
+        /** When the newest frame was taken (SystemClock.elapsedRealtime). */
+        fun frameAt(): Long = instance?.lastFrameAt ?: 0L
+
+        /** Waits (up to [maxWaitMs]) until a frame newer than [sinceMs] exists. A still screen sends none, so the wait is capped. */
+        suspend fun waitFrame(sinceMs: Long, maxWaitMs: Long) {
+            val svc = instance ?: return
+            val limit = SystemClock.elapsedRealtime() + maxWaitMs
+            while (svc.lastFrameAt < sinceMs && SystemClock.elapsedRealtime() < limit) kotlinx.coroutines.delay(10)
+        }
+
         fun stop(context: Context) {
             context.stopService(Intent(context, CaptureService::class.java))
         }

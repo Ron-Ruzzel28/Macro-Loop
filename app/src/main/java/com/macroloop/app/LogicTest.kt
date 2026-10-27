@@ -43,7 +43,7 @@ object LogicTest {
     private fun step(name: String, type: StepType = StepType.CLICK, f: (Step) -> Step = { it }) =
         f(Step(type, id = name, name = name, waitNextMs = 0, timeoutMs = 1000))
 
-    private fun macro(vararg steps: Step) = Macro("m", "test", steps.toList())
+    private fun macro(vararg steps: Step) = Macro("m", "test", steps.toList(), scan = false)
 
     private class Case(val name: String, val ok: Boolean, val detail: String)
 
@@ -412,6 +412,49 @@ object LogicTest {
             m = macro(step("a") { it.copy(conditions = listOf(Condition(label = "p")), timeoutMs = 60_000) }).copy(stuck = listOf(step("rescue")))) { h, e ->
             h.ran == listOf("a") && e == null
         }
+
+        // ---- Scan mode: look once, skip what is not there, loop until something happens
+        fun scanned(vararg steps: Step) = Macro("m", "test", steps.toList(), scan = true)
+        val pic = Condition(label = "p")
+
+        suspend fun scanCheck(name: String, expectRan: List<String>, setup: (Host) -> Unit = {}, rounds: Int = 1,
+                              start: ((Macro) -> List<Step>)? = null, m: Macro, endOk: (String?) -> Boolean = { it == null }) {
+            val h = Host()
+            setup(h)
+            val end = FlowEngine(h).run(m, start?.invoke(m), rounds)
+            cases += Case(name, h.ran == expectRan && endOk(end), "ran ${h.ran}, ended ${end ?: "normally"}, clock ${h.clock}")
+        }
+
+        scanCheck("Scan: a step whose picture is not there is skipped at once, the next one runs", listOf("b"),
+            setup = { it.images["p"] = false }, rounds = 1,
+            m = scanned(step("a") { it.copy(conditions = listOf(pic)) }, step("b")))
+
+        scanCheck("Scan: it loops the list until the picture shows up, then does the step", listOf("a"),
+            setup = { it.imageFlipAt["p"] = 600 },
+            m = scanned(step("a") { it.copy(conditions = listOf(pic)) }))
+
+        scanCheck("Scan: a picture that is there is done at once, without waiting", listOf("a", "b"),
+            setup = { it.images["p"] = true },
+            m = scanned(step("a") { it.copy(conditions = listOf(pic)) }, step("b")))
+
+        scanCheck("Scan: If false steps run when the picture is not there", listOf("f"),
+            setup = { it.images["p"] = false },
+            m = scanned(step("a") { it.copy(conditions = listOf(pic), onFail = listOf(step("f"))) }))
+
+        scanCheck("Scan: a passing round counts only when something was done (repeat 2)", listOf("a", "b", "a", "b"), rounds = 2,
+            m = scanned(step("a"), step("b")))
+
+        scanCheck("Scan: a test run of one step does not loop forever", emptyList(),
+            setup = { it.images["p"] = false }, start = { m -> listOf(m.steps[0]) },
+            m = scanned(step("a") { it.copy(conditions = listOf(pic)) }))
+
+        scanCheck("Scan: Stop ends it even while nothing is on screen", listOf("s1"),
+            setup = { it.images["p"] = true },
+            endOk = { it != null && it.contains("Stop step") },
+            m = scanned(step("a") { it.copy(conditions = listOf(pic), onSuccess = emptyList()) }.copy(conditions = listOf(Condition(label = "never"))), step("s1"), step("s", StepType.STOP_MACRO)))
+
+        scanCheck("Scan: a counter step counts as doing something", listOf(),
+            m = scanned(step("c", StepType.COUNTER_ADD) { it.copy(text = "n") }))
 
         val passed = cases.count { it.ok }
         val lines = ArrayList<String>()

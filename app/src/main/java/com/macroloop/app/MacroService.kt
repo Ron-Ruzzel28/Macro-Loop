@@ -53,6 +53,8 @@ class MacroService : AccessibilityService() {
         private const val HOLD_SEGMENT_MS = 350L
         private const val FINGER_GAP_PX = 170
         private const val START_SETTLE_MS = 350L
+        private const val FRAME_SETTLE_MS = 60L      // after a tap, the screen is looked at this long afterwards
+        private const val FRAME_WAIT_MS = 180L       // and a newer picture of the screen is waited for no longer than this
     }
 
     private lateinit var wm: WindowManager
@@ -282,7 +284,7 @@ class MacroService : AccessibilityService() {
                 // A short pause lets Android finish hiding the editor or the Play button,
                 // so the first tap does not land on a window that is still there.
                 delay(START_SETTLE_MS)
-                val end = FlowEngine(RunHost(macro.name)).run(macro, startList, rounds)
+                val end = FlowEngine(RunHost(macro.name, macro.scan)).run(macro, startList, rounds)
                 result = end ?: "Finished: ${macro.name}"
                 finish(result!!)
             } catch (e: CancellationException) {
@@ -343,13 +345,40 @@ class MacroService : AccessibilityService() {
 
     // ---------------------------------------------------------------- the host the engine runs on
 
-    private inner class RunHost(private val macroName: String) : StepHost {
+    private inner class RunHost(private val macroName: String, private val scan: Boolean = false) : StepHost {
         private val human = humanTiming()
         private val templates = HashMap<String, Bitmap?>()
 
         private fun template(id: String): Bitmap? = templates.getOrPut(id) { TemplateStore.load(id) }
 
-        override suspend fun perform(step: Step, where: String): Outcome = when (step.type) {
+        private var cachedFrame: Bitmap? = null
+        private var cachedAt = -1L
+        private var lastActionAt = 0L
+
+        /**
+         * The newest picture of the screen, at once. Right after a tap it first waits a moment for the screen to change.
+         * The same picture is handed to every check until a new one arrives, so no time is lost copying it again.
+         */
+        private suspend fun sharedFrame(): Bitmap? {
+            if (CaptureService.instance == null) return null
+            val need = lastActionAt + FRAME_SETTLE_MS
+            if (CaptureService.frameAt() < need) CaptureService.waitFrame(need, FRAME_WAIT_MS)
+            val at = CaptureService.frameAt()
+            val c = cachedFrame
+            if (c != null && at == cachedAt) return c
+            val f = CaptureService.grab() ?: return null
+            cachedFrame = f
+            cachedAt = at
+            return f
+        }
+
+        override suspend fun perform(step: Step, where: String): Outcome {
+            val o = doPerform(step, where)
+            if (o is Outcome.Ok && step.type != StepType.TOAST) lastActionAt = SystemClock.elapsedRealtime()
+            return o
+        }
+
+        private suspend fun doPerform(step: Step, where: String): Outcome = when (step.type) {
             StepType.CLICK -> clickAt(step, step.x + step.offsetX, step.y + step.offsetY, where)
             StepType.SWIPE ->
                 if (swipe(step, human)) Outcome.Ok else Outcome.Fatal("Stopped: the swipe in step $where was cancelled by Android.")
@@ -386,7 +415,7 @@ class MacroService : AccessibilityService() {
 
         /** Looks at a small, grey copy of the screen without its top and bottom strips (clock, buttons) and says if it differs. */
         override suspend fun screenChanged(): Boolean? {
-            val frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 400, 250) ?: return null
+            val frame = sharedFrame() ?: return null
             val now = withContext(Dispatchers.Default) {
                 val small = Bitmap.createScaledBitmap(frame, 24, 48, true)
                 val px = IntArray(24 * 48)
@@ -409,7 +438,7 @@ class MacroService : AccessibilityService() {
         override suspend fun imageHolds(c: Condition): ImageCheck {
             if (c.kind == ConditionKind.COLOR || c.kind == ConditionKind.TEXT) return screenHolds(c)
             val t = template(c.templateId) ?: return ImageCheck(false, "\"${c.label}\" has no picture")
-            val frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 120, 250)
+            val frame = sharedFrame()
                 ?: return ImageCheck(false, "\"${c.label}\" could not be checked, the screen is not visible")
             val scale = if (c.capW > 0) frame.width.toDouble() / c.capW else 1.0
             val region = if (c.wholeScreen) null
@@ -425,7 +454,7 @@ class MacroService : AccessibilityService() {
         /** Colour and text conditions (also used by Hold Until). */
         private suspend fun screenHolds(c: Condition): ImageCheck {
             val name = c.label.ifBlank { if (c.kind == ConditionKind.COLOR) "the colour" else "\"${c.text}\"" }
-            val frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 120, 250)
+            val frame = sharedFrame()
                 ?: return ImageCheck(false, "$name could not be checked, the screen is not visible")
             val r = ScreenCheck.regionFor(c, frame)
             if (c.kind == ConditionKind.COLOR) {
@@ -534,10 +563,11 @@ class MacroService : AccessibilityService() {
             var last: Matcher.Result? = null
             var lastCount = 0
             var steady = 0
-            var first = true
+            // Scan mode: one look, tap on the first match; no match means the step is skipped, not waited for.
+            val limitMs = if (scan) 0L else step.timeoutMs
+            val needSteady = if (scan) 1 else 2
             while (true) {
-                val frame = if (first) CaptureService.grabFresh(startedAt) else CaptureService.grab()
-                first = false
+                val frame = sharedFrame()
                 if (frame != null) {
                     val scale = if (step.capW > 0) frame.width.toDouble() / step.capW else 1.0
                     val region = if (step.wholeScreen) null
@@ -557,7 +587,7 @@ class MacroService : AccessibilityService() {
                         steady = if (prev != null && prev.found && lastCount == hits.size &&
                             kotlin.math.abs(prev.x - res.x) <= 8 && kotlin.math.abs(prev.y - res.y) <= 8
                         ) steady + 1 else 1
-                        if (steady >= 2) {
+                        if (steady >= needSteady) {
                             flash(hits, true)
                             for ((n, hit) in hits.withIndex()) {
                                 if (n > 0) delay(if (human) Random.nextLong(150, 350) else 120)
@@ -573,13 +603,13 @@ class MacroService : AccessibilityService() {
                     lastCount = hits.size
                 }
                 val elapsed = SystemClock.elapsedRealtime() - startedAt
-                if (elapsed >= step.timeoutMs) break
+                if (elapsed >= limitMs) break
                 delay(120)
                 waitHook?.invoke()
             }
             flash(listOfNotNull(last), false)
             return Outcome.Missing(
-                "Stopped: couldn't find \"${step.label.ifBlank { "the picture" }}\" for ${step.timeoutMs / 1000} s. " +
+                "Stopped: couldn't find \"${step.label.ifBlank { "the picture" }}\" for ${limitMs / 1000} s. " +
                     "Best match was ${(bestScore * 100).toInt()}%, needed ${step.threshold}%.",
             )
         }
@@ -625,7 +655,7 @@ class MacroService : AccessibilityService() {
     // ---------------------------------------------------------------- gestures
 
     private fun humanTiming(): Boolean =
-        getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_HUMAN, true)
+        getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_HUMAN, false)
 
     private fun jitter(range: Int): Int = if (range > 0) Random.nextInt(-range, range + 1) else 0
 

@@ -66,6 +66,20 @@ object Matcher {
     @Volatile
     private var loaded = false
 
+    private var cacheBmp: Bitmap? = null
+    private var cacheGray: Mat? = null
+
+    /** The grey copy of a frame. Many checks look at the same frame, so it is made once. Not released here: the garbage collector does that. */
+    @Synchronized
+    private fun grayCached(b: Bitmap): Mat {
+        val c = cacheGray
+        if (c != null && cacheBmp === b) return c
+        val g = gray(b)
+        cacheBmp = b
+        cacheGray = g
+        return g
+    }
+
     fun ensureLoaded(): Boolean {
         if (!loaded) loaded = OpenCVLoader.initLocal()
         return loaded
@@ -87,7 +101,7 @@ object Matcher {
     ): Result {
         if (!ensureLoaded()) return Result(false, 0.0, 0, 0, 0, 0)
         val started = System.nanoTime()
-        val f = gray(frame)
+        val f = grayCached(frame)
         val base = gray(template)
         try {
             val limit = thresholdPct / 100.0
@@ -111,7 +125,6 @@ object Matcher {
             val final = findOnce(f, base, scale * best.sizeFactor, region, thresholdPct, gate = true)
             return final.copy(sizeFactor = best.sizeFactor, ms = elapsedMs(started))
         } finally {
-            f.release()
             base.release()
         }
     }
@@ -130,7 +143,7 @@ object Matcher {
     ): List<Result> {
         if (!ensureLoaded()) return emptyList()
         val started = System.nanoTime()
-        val f = gray(frame)
+        val f = grayCached(frame)
         var t = gray(template)
         try {
             if (abs(scale - 1.0) > 0.02) t = resized(t, scale)
@@ -165,7 +178,6 @@ object Matcher {
             val rowHeight = max(1, t.rows() / 2)
             return out.sortedWith(compareBy({ it.y / rowHeight }, { it.x })).map { it.copy(ms = ms) }
         } finally {
-            f.release()
             t.release()
         }
     }

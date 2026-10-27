@@ -90,6 +90,8 @@ class RunState {
     val firedAt = HashMap<String, Long>()       // when each watcher last ran its steps
     var lastChangeAt = 0L                       // when the screen last changed
     var rescues = 0                             // stuck rescues in a row, with no change in between
+    var scan = false                            // Scan mode: look once, skip what is not there, loop the list
+    var acted = false                           // something was done in this pass of the list
 }
 
 /** Thrown from inside a watcher or rescue to end whatever is waiting and carry out a Stop or Go to. */
@@ -103,6 +105,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         const val GUARD_EVERY_MS = 1000L
         const val WATCH_COOLDOWN_MS = 1500L
         const val MAX_RESCUES = 5
+        const val IDLE_PASS_MS = 120L
     }
 
 
@@ -115,6 +118,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         val state = RunState()
         val root = macro.steps
         state.macro = macro
+        state.scan = macro.scan
         state.byId = collect(root + macro.watchers + macro.stuck)
         state.keep = macro.counters.filter { it.keep }.map { it.name }.toSet()
         for (name in state.keep) state.counters[name] = host.counterLoad(macro.id, name)
@@ -128,7 +132,14 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
     }
 
     private suspend fun runRounds(macro: Macro, startList: List<Step>?, rounds: Int, state: RunState, root: List<Step>): String? {
-        for (round in 1..rounds) {
+        // In Scan mode a pass where nothing was done does not count: the list is looked at again, until something happens.
+        // A rounds number of 0 means until stopped.
+        val loopIdle = state.scan && startList == null
+        var done = 0
+        var round = 0
+        while (rounds <= 0 || done < rounds) {
+            round++
+            state.acted = false
             var cur: List<Step> = startList ?: root
             var i = 0
             var prevOk = true
@@ -145,6 +156,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                     Flow.Next -> i++
                     is Flow.Stop -> return f.message
                     is Flow.Jump -> {
+                        state.acted = true
                         val at = root.indexOfFirst { it.id == f.targetId }
                         if (at < 0) return "Stopped: a Go to link points to a step that no longer exists."
                         if (++state.jumps > maxJumps) {
@@ -156,6 +168,11 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                     }
                 }
             }
+            if (loopIdle && !state.acted) {
+                host.pause(IDLE_PASS_MS)
+                continue
+            }
+            done++
         }
         return null
     }
@@ -211,6 +228,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
             StepType.LINK -> return runLink(macroName, where, step, prevOk, state)
             StepType.WAIT -> {
                 waitWatching(host.humanWait(step.ms), state)
+                state.acted = true
                 return StepResult(Flow.Next, true)
             }
             StepType.COUNTER_ADD, StepType.COUNTER_RESET -> {
@@ -218,6 +236,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                 if (name.isBlank()) return StepResult(Flow.Stop("Stopped: the counter step $where has no counter chosen. Edit it and pick one."), false)
                 val v = if (step.type == StepType.COUNTER_RESET) 0 else (state.counters[name] ?: 0) + step.amount
                 state.counters[name] = v
+                state.acted = true
                 if (name in state.keep) state.macro?.let { host.counterSave(it.id, name, v) }
                 return StepResult(Flow.Next, true)
             }
@@ -238,6 +257,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
             for (r in 1..step.repeatCount) {
                 outcome = host.perform(step, where)
                 if (outcome !is Outcome.Ok) break
+                state.acted = true
             }
         }
 
@@ -251,7 +271,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
             is Outcome.Fatal -> StepResult(Flow.Stop(o.message), false)
             is Outcome.Missing -> when {
                 step.onFail.isNotEmpty() -> StepResult(runList(macroName, step.onFail, "$where on fail", state), false)
-                step.skipIfMissing -> StepResult(Flow.Next, false)
+                step.skipIfMissing || state.scan -> StepResult(Flow.Next, false)
                 else -> StepResult(Flow.Stop(o.message), false)
             }
         }
@@ -382,7 +402,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                 return Outcome.Ok
             }
             why = notes.joinToString(" and ")
-            if (!hasImage) return Outcome.Missing("Stopped: step $where did not run, because $why.")
+            if (!hasImage || state.scan) return Outcome.Missing("Stopped: step $where did not run, because $why.")
             if (host.now() - started >= step.timeoutMs) break
             host.status("Step $where: waiting\n$why")
             host.pause(150)

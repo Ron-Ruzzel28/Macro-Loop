@@ -526,7 +526,7 @@ class MainActivity : ComponentActivity() {
                         name = name.trim().ifEmpty { "New macro" },
                         game = game.trim(),
                         version = version.trim().ifEmpty { "1.0.0" },
-                        repeat = repeat.toIntOrNull()?.coerceIn(1, 9999) ?: 1,
+                        repeat = repeat.toIntOrNull()?.coerceIn(0, 9999) ?: 1,
                     ),
                 )
             }

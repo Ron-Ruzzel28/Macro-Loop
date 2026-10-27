@@ -123,6 +123,10 @@ object HelpTopics {
         t("disable", "Disable / Enable", "Skips the step without deleting it.", "Turn off a step while you test something else.", "Easier than deleting when you are not sure.")
         t("cond_off", "Turn Off (keep it)", "Ignores this condition without deleting it.", "Try the step without the condition, then turn it back on.")
         t("similarity", "Edit Similarity %", "How much the picture on screen must look like the saved one. Higher is stricter.", "", "Start at 90. Lower it to 80-85 if it is missed. Raise it if it taps the wrong thing.", "Setting it very low. It will tap look-alikes.")
+        t("auto_tune", "Auto-tune Similarity", "Looks at the screen right now and sets the similarity just under how well the saved picture matches. The picture must be on the screen.",
+            "The button matches at 97%, so it is set to 91%: found every time, but a look-alike is not.", "Do it on the real screen where the picture really shows.", "Doing it on a different screen. It will say the match is too low.")
+        t("pick_colour", "Pick Colour Again", "Draw the box again, then tap the picture to choose the exact colour. Fine-tune with the sliders or the hex box.",
+            "Tap the green of a health bar to take exactly that green.", "Tap a spot in the middle of the colour, not on an edge where colours mix.")
         t("detect_location", "Edit Detect Location", "Look near where the picture was captured, or search the whole screen.", "", "Whole screen is easiest. Choose near the capture spot to be faster and avoid look-alikes elsewhere.")
         t("change_appear", "Change to Appears / Not appear", "Switch between \"the picture is there\" and \"the picture is gone\".", "")
         t("test_condition", "Test Condition", "Looks at the screen right now and says if the picture is found.", "", "Use it on the real screen before you trust a condition.")
@@ -138,6 +142,10 @@ object HelpTopics {
         t("sec_watchers", "Watchers", "Things the macro watches for all the time, like a popup. When one shows up, its steps run, then the macro carries on.", "If the \"X\" of an ad shows up, tap it.",
             "Use a watcher for popups, instead of adding extra steps everywhere.", "A watcher with no condition does nothing.")
         t("sec_stuck", "Stuck rescue", "Steps that run when the screen has been frozen for a while (set in Stuck check).", "Press Back, then open the game again.", "With no steps here, the macro just stops with a message.")
+        t("scan_mode", "Scan mode", "ON: the macro goes through the steps quickly. Each step looks at the screen once. If its picture is there it does the action, if not it skips that step at once, and the list starts again. OFF: a step waits (up to its time limit) for its picture.",
+            "Step 1 taps Claim when it shows, step 2 taps Close when it shows. With Scan mode the macro loops and does whichever one is on screen right now.",
+            "Keep it on for games. Set Repeat to 0 on the macro's info page to keep going until you press Stop. A pass where nothing happened does not count as a repeat.",
+            "Expecting it to wait for a slow loading screen. Use Scan mode off for a step that must wait.")
         t("counters", "Counters", "Numbers the macro can add to and check. You make them here, then use them in steps and conditions.", "\"claims\", kept between runs, to stop after 5 a day.", "Tick \"keep between runs\" for daily limits.")
         t("stuck_check", "Stuck check", "If the screen does not change for this many seconds, MacroLoop runs the Stuck rescue steps.", "30 seconds.",
             "A game with a moving background is not counted as stuck. It looks for a frozen screen. Needs screen capture.", "Setting it shorter than a normal long wait.")
@@ -180,7 +188,7 @@ object HelpTopics {
         "link a step if true" to "link_true", "link a step if false" to "link_false", "run only when linked" to "linked_only",
         "run in order again" to "linked_only", "duplicate" to "duplicate", "copy" to "copy", "cut" to "cut", "delete" to "delete",
         "disable" to "disable", "enable" to "disable", "turn off (keep it)" to "cond_off", "turn on" to "cond_off",
-        "edit similarity %" to "similarity", "edit detect location" to "detect_location", "test condition" to "test_condition",
+        "edit similarity %" to "similarity", "auto-tune similarity" to "auto_tune", "pick colour again" to "pick_colour", "edit detect location" to "detect_location", "test condition" to "test_condition",
         "edit chance %" to "chance", "edit longest hold" to "longest_hold", "remove hold until" to "remove_hold",
         "change counter" to "change_counter", "edit amount" to "amount", "edit number" to "number",
         "main job" to "sec_main", "manage actions" to "manage", "run test" to "run_test", "save" to "save", "more" to "more", "exit" to "exit",
@@ -191,7 +199,7 @@ object HelpTopics {
         "change to appears" to "change_appear", "change to not appear" to "change_appear", "change to:" to "change_appear",
         "change to success" to "cond_action_result", "change to failed" to "cond_action_result",
         "watchers" to "sec_watchers", "stuck rescue" to "sec_stuck", "counters" to "counters", "stuck check" to "stuck_check",
-        "schedule" to "schedule", "help topics" to "help_topics",
+        "schedule" to "schedule", "help topics" to "help_topics", "scan mode" to "scan_mode",
     )
 
     /** The help for a menu row or a button, found by its words. Null when there is nothing to say. */

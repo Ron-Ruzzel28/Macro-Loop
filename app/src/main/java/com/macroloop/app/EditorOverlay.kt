@@ -65,6 +65,7 @@ class EditorOverlay(
     private var counters: List<CounterDef> = macro.counters
     private var stuckSec = macro.stuckSec
     private var schedule = macro.schedule
+    private var scan = macro.scan
     private var section = 0          // which list the panel shows: 0 = Main Job, 1 = Watchers, 2 = Stuck rescue
 
     /** The list being edited right now. */
@@ -73,7 +74,7 @@ class EditorOverlay(
         set(v) { when (section) { 0 -> mainSteps = v; 1 -> watchers = v; else -> stuck = v } }
 
     private fun current(): Macro = base.copy(
-        steps = mainSteps, watchers = watchers, stuck = stuck, counters = counters, stuckSec = stuckSec, schedule = schedule,
+        steps = mainSteps, watchers = watchers, stuck = stuck, counters = counters, stuckSec = stuckSec, schedule = schedule, scan = scan,
     )
 
     private fun everyStep(): List<Step> = flat(mainSteps) + flat(watchers) + flat(stuck)
@@ -374,7 +375,7 @@ class EditorOverlay(
         val prefs = ctx.getSharedPreferences(MacroService.PREFS, Context.MODE_PRIVATE)
         showDialogBox("Random Setting") { box ->
             box.addView(label("Small random delays and tap offsets, so taps are not exactly the same every time.", 13f, TokenInts.textMuted), lp(4))
-            box.addView(checkBox("Human-like timing", prefs.getBoolean(MacroService.PREF_HUMAN, true)) { on ->
+            box.addView(checkBox("Human-like timing", prefs.getBoolean(MacroService.PREF_HUMAN, false)) { on ->
                 prefs.edit().putBoolean(MacroService.PREF_HUMAN, on).apply()
             }, lp(8))
             box.addView(textButton("CLOSE") { closeMenu() }, lp(8))
@@ -1141,7 +1142,7 @@ class EditorOverlay(
             StepType.CLICK_IMAGE -> newOrExist { box, id, fw, fh ->
                 val n = flat(root).count { it.type == StepType.CLICK_IMAGE } + 1
                 finishAdd(target, Step(
-                    StepType.CLICK_IMAGE, templateId = id, label = "Image $n", wholeScreen = true,
+                    StepType.CLICK_IMAGE, templateId = id, label = "Image $n", wholeScreen = false,
                     boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
                 ))
             }
@@ -1507,7 +1508,7 @@ class EditorOverlay(
     private fun addHoldUntil(ref: Ref, appear: Boolean) {
         newOrExist { box, id, fw, fh ->
             val c = Condition(
-                kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = true,
+                kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = false,
                 label = "Hold ${ref.index + 1}",
                 boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
             )
@@ -1546,6 +1547,10 @@ class EditorOverlay(
                 },
                 Row(if (h.mustAppear) "Change to: until it disappears" else "Change to: until it appears", icon = Icon.REDO) {
                     closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
+                },
+                Row("Auto-tune Similarity", icon = Icon.GEAR) {
+                    closeMenu()
+                    autoTune(h.templateId, h.boxX, h.boxY, h.boxW, h.boxH, h.capW, h.wholeScreen) { v -> upd { it.copy(threshold = v) } }
                 },
                 Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(h.threshold) { v -> upd { it.copy(threshold = v) } } },
                 Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(h.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } },
@@ -1612,6 +1617,10 @@ class EditorOverlay(
             listOf(
                 Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); recropStep(ref) },
                 Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeImage(ref, false) },
+                Row("Auto-tune Similarity", icon = Icon.GEAR) {
+                    closeMenu()
+                    autoTune(s.templateId, s.boxX, s.boxY, s.boxW, s.boxH, s.capW, s.wholeScreen) { v -> edit(ref) { it.copy(threshold = v) } }
+                },
                 Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(s.threshold) { v -> edit(ref) { it.copy(threshold = v) } } },
                 Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(s.wholeScreen) { v -> edit(ref) { it.copy(wholeScreen = v) } } },
                 Row("Edit Image", icon = Icon.PENCIL) { editImageDialog(ref) },
@@ -1637,6 +1646,10 @@ class EditorOverlay(
             ConditionKind.IMAGE -> {
                 rows.add(Row("Re-crop Image", icon = Icon.PENCIL) { closeMenu(); recropCondition(ref, j) })
                 rows.add(Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeConditionImage(ref, j, true) })
+                rows.add(Row("Auto-tune Similarity", icon = Icon.GEAR) {
+                    closeMenu()
+                    autoTune(c.templateId, c.boxX, c.boxY, c.boxW, c.boxH, c.capW, c.wholeScreen) { v -> upd { it.copy(threshold = v) } }
+                })
                 rows.add(Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(c.threshold) { v -> upd { it.copy(threshold = v) } } })
                 rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(c.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } })
                 rows.add(Row(if (c.mustAppear) "Change to Not appear" else "Change to Appears", icon = Icon.REDO) {
@@ -1748,8 +1761,8 @@ class EditorOverlay(
         val hint = if (mode == 2) "the area to watch" else "the colour to look for"
         toast("Move and resize the box over $hint, then tap the tick.")
         startCapture(null, 1) { box, hex, fw, fh ->
-            val col = runCatching { Color.parseColor(hex) }.getOrDefault(0)
-            onDone(
+            val mean = runCatching { Color.parseColor(hex) }.getOrDefault(0)
+            fun finish(col: Int) = onDone(
                 Condition(
                     kind = ConditionKind.COLOR, color = col, mustAppear = mode != 1, changes = mode == 2,
                     wholeScreen = mode != 2, tolerance = if (mode == 2) 12 else 20,
@@ -1757,6 +1770,7 @@ class EditorOverlay(
                     boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
                 ),
             )
+            if (mode == 2) finish(mean) else later { showColorPicker(lastCrop, box.left, box.top, mean) { finish(it) } }
         }
     }
 
@@ -1785,9 +1799,13 @@ class EditorOverlay(
         if (!c.changes) rows.add(Row("Pick Colour Again", icon = Icon.PENCIL) {
             closeMenu()
             startCapture(if (c.boxW > 0) Rect(c.boxX, c.boxY, c.boxX + c.boxW, c.boxY + c.boxH) else null, 1) { box, hex, fw, fh ->
-                val col = runCatching { Color.parseColor(hex) }.getOrDefault(c.color)
-                upd { it.copy(color = col, label = "Colour ${ScreenCheck.hex(col)}", boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
-                refreshPanel()
+                val mean = runCatching { Color.parseColor(hex) }.getOrDefault(c.color)
+                later {
+                    showColorPicker(lastCrop, box.left, box.top, mean) { col ->
+                        upd { it.copy(color = col, label = "Colour ${ScreenCheck.hex(col)}", boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh) }
+                        refreshPanel()
+                    }
+                }
             }
         }) else rows.add(Row("Move Area", icon = Icon.PENCIL) {
             closeMenu()
@@ -1853,7 +1871,7 @@ class EditorOverlay(
         newOrExist { box, id, fw, fh ->
             val n = (stepAt(ref)?.conditions?.size ?: 0)
             val c = Condition(
-                kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = true,
+                kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = false,
                 label = "Condition ${ref.index + 1}${('a' + n)}",
                 boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
             )
@@ -1942,6 +1960,12 @@ class EditorOverlay(
         sec(1, "Watchers (${watchers.size})")
         sec(2, "Stuck rescue (${stuck.size})")
         rows.add(Row("Settings"))
+        rows.add(Row("Scan mode: " + (if (scan) "on" else "off"), icon = Icon.REDO) {
+            scan = !scan
+            dirty = true
+            toast(if (scan) "Scan mode on: each step looks once and the list loops." else "Scan mode off: steps wait for their picture.")
+            openMacroMenu()
+        })
         rows.add(Row("Counters (${counters.size})", icon = Icon.PLUS) { openCounters() })
         rows.add(Row("Stuck check: " + (if (stuckSec > 0) "$stuckSec s" else "off"), icon = Icon.GEAR) { stuckDialog() })
         rows.add(Row("Schedule: " + (MacroScheduler.describe(current()) ?: "off"), icon = Icon.PLAY) { scheduleDialog() })
@@ -2105,6 +2129,183 @@ class EditorOverlay(
                 }
             },
         )
+    }
+
+
+    // ================================================================ the colour picker (tap the picture, fine-tune)
+
+    private var lastCrop: Bitmap? = null
+
+    /**
+     * After the box is drawn: the area is shown big. Tap it to take the colour of that exact pixel, nudge it with the
+     * X and Y buttons, and fine-tune with the red / green / blue sliders or the hex box.
+     */
+    private fun showColorPicker(crop: Bitmap?, boxLeft: Int, boxTop: Int, start: Int, onDone: (Int) -> Unit) {
+        if (crop == null) {
+            onDone(start)
+            return
+        }
+        var color = start or (0xFF shl 24)
+        var busy = false
+        lateinit var zoom: ColorPickView
+        lateinit var swatch: View
+        lateinit var hexBox: EditText
+        lateinit var xv: TextView
+        lateinit var yv: TextView
+        val bars = ArrayList<android.widget.SeekBar>()
+        val nums = ArrayList<TextView>()
+
+        fun hexOf(c: Int) = "#%06X".format(c and 0xFFFFFF)
+        fun show(c: Int, hexToo: Boolean = true) {
+            busy = true
+            color = c or (0xFF shl 24)
+            swatch.background = Ui.rounded(color, dp(6).toFloat())
+            val v = intArrayOf((c shr 16) and 255, (c shr 8) and 255, c and 255)
+            bars.forEachIndexed { i, b -> b.progress = v[i]; nums[i].text = v[i].toString() }
+            if (hexToo) hexBox.setText(hexOf(c))
+            xv.text = (boxLeft + zoom.px).toString()
+            yv.text = (boxTop + zoom.py).toString()
+            busy = false
+        }
+
+        showDialogBox("Colour", focusable = true) { box ->
+            val short = shortScreen
+            val zoomSize = if (short) (screenH - topY(dp(110)) - dp(110)).coerceIn(dp(100), dp(190)) else (screenW * 0.9 - dp(36)).toInt().coerceAtMost(dp(250)).coerceAtLeast(dp(150))
+            zoom = ColorPickView(ctx, crop, crop.width / 2, crop.height / 2) { _, _ -> show(zoom.colorHere()) }
+            val controls = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+
+            fun nudgeRow(name: String, valueView: TextView, dx: Int, dy: Int): View {
+                val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                row.addView(label(name, 15f, TokenInts.text), LinearLayout.LayoutParams(dp(28), LinearLayout.LayoutParams.WRAP_CONTENT))
+                row.addView(textButton("−") { zoom.setPixel(zoom.px - dx, zoom.py - dy); show(zoom.colorHere()) }.apply { textSize = 22f })
+                row.addView(valueView, LinearLayout.LayoutParams(dp(60), LinearLayout.LayoutParams.WRAP_CONTENT))
+                row.addView(textButton("+") { zoom.setPixel(zoom.px + dx, zoom.py + dy); show(zoom.colorHere()) }.apply { textSize = 22f })
+                return row
+            }
+            xv = label("", 15f, TokenInts.text).apply { gravity = Gravity.CENTER }
+            yv = label("", 15f, TokenInts.text).apply { gravity = Gravity.CENTER }
+            controls.addView(nudgeRow("X:", xv, 1, 0))
+            controls.addView(nudgeRow("Y:", yv, 0, 1))
+
+            swatch = View(ctx)
+            hexBox = EditText(ctx).apply {
+                textSize = 16f
+                setTextColor(TokenInts.text)
+                setSingleLine(true)
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                background = GradientDrawable().apply { setColor(Color.TRANSPARENT); setStroke(dp(1), TokenInts.textMuted); cornerRadius = dp(6).toFloat() }
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+                    override fun afterTextChanged(s: android.text.Editable?) {
+                        if (busy) return
+                        val t = s.toString().trim().removePrefix("#")
+                        if (t.length == 6) runCatching { Color.parseColor("#$t") }.onSuccess { show(it, hexToo = false) }
+                    }
+                })
+            }
+            val swatchRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            swatchRow.addView(swatch, LinearLayout.LayoutParams(dp(56), dp(40)))
+            swatchRow.addView(hexBox, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) })
+            controls.addView(swatchRow, lp(8))
+
+            listOf("R", "G", "B").forEachIndexed { i, name ->
+                val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                val num = label("0", 14f, TokenInts.text).apply { gravity = Gravity.CENTER }
+                val bar = android.widget.SeekBar(ctx).apply {
+                    max = 255
+                    progressTintList = android.content.res.ColorStateList.valueOf(TokenInts.primary)
+                    thumbTintList = android.content.res.ColorStateList.valueOf(TokenInts.primary)
+                    setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) {
+                            if (!fromUser || busy) return
+                            val v = intArrayOf((color shr 16) and 255, (color shr 8) and 255, color and 255)
+                            v[i] = p
+                            show((v[0] shl 16) or (v[1] shl 8) or v[2])
+                        }
+                        override fun onStartTrackingTouch(sb: android.widget.SeekBar?) = Unit
+                        override fun onStopTrackingTouch(sb: android.widget.SeekBar?) = Unit
+                    })
+                }
+                bars.add(bar)
+                nums.add(num)
+                row.addView(label(name, 14f, TokenInts.textMuted), LinearLayout.LayoutParams(dp(20), LinearLayout.LayoutParams.WRAP_CONTENT))
+                row.addView(bar, LinearLayout.LayoutParams(0, dp(40), 1f))
+                row.addView(num, LinearLayout.LayoutParams(dp(40), LinearLayout.LayoutParams.WRAP_CONTENT))
+                controls.addView(row, lp(2))
+            }
+
+            if (short) {
+                val side = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+                side.addView(zoom, LinearLayout.LayoutParams(zoomSize, zoomSize))
+                side.addView(controls, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(14) })
+                box.addView(side, lp(8))
+            } else {
+                box.addView(zoom, lp(10).apply { height = zoomSize })
+                box.addView(label("Tap the picture to take the colour of that exact spot.", 12f, TokenInts.textMuted), lp(4))
+                box.addView(controls, lp(6))
+            }
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
+            row.addView(textButton("CANCEL") { closeMenu() })
+            row.addView(textButton("SAVE") {
+                val chosen = color
+                closeMenu()
+                onDone(chosen)
+                dirty = true
+                refreshPanelIfOpen()
+            })
+            box.addView(row, lp(8))
+            show(start)
+        }
+    }
+
+    // ================================================================ auto-tune similarity
+
+    /**
+     * Looks at the screen right now and sets the similarity a little under how well the saved picture matches,
+     * so it is found every time but a look-alike is not. The picture has to be on screen.
+     */
+    private fun autoTune(templateId: String, bx: Int, by: Int, bw: Int, bh: Int, capW: Int, whole: Boolean, onSet: (Int) -> Unit) {
+        val t = TemplateStore.load(templateId)
+        if (t == null) {
+            toast("This picture is missing. Use Change Image.")
+            return
+        }
+        if (!CaptureService.running) {
+            toast("Screen capture is off. Open MacroLoop, press Edit Mode, and tap Start.")
+            return
+        }
+        scope.launch {
+            setHidden(true)
+            CaptureService.instance?.fast = true
+            delay(450)
+            var frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 100, 400)
+            var tries = 0
+            while (frame != null && ScreenCheck.isBlank(frame) && tries < 3) { tries++; delay(300); frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 100, 500) }
+            CaptureService.instance?.fast = false
+            if (frame == null) {
+                setHidden(false)
+                toast("Could not see the screen. Try again.")
+                return@launch
+            }
+            val scale = if (capW > 0) frame.width.toDouble() / capW else 1.0
+            val region = if (whole) null else Matcher.nearRegion(bx, by, bw, bh, scale, frame.width, frame.height)
+            val res = withContext(Dispatchers.Default) { Matcher.find(frame, t, region, 40, scale) }
+            setHidden(false)
+            val pct = (res.score * 100).toInt()
+            when {
+                res.tooPlain -> toast("That picture is too plain to find. Re-crop it with more detail.")
+                pct < 70 -> toast("Best match is only $pct%. Open the screen where the picture is, then try Auto-tune.")
+                else -> {
+                    val v = (pct - 6).coerceIn(70, 96)
+                    onSet(v)
+                    dirty = true
+                    toast("It matches at $pct%. Similarity set to $v%.")
+                    refreshPanelIfOpen()
+                }
+            }
+        }
     }
 
     // ================================================================ placing a picture: the capture box
@@ -2322,6 +2523,7 @@ class EditorOverlay(
             val w = region.width().coerceIn(2, frame.width - x)
             val h = region.height().coerceIn(2, frame.height - y)
             val crop = Bitmap.createBitmap(frame, x, y, w, h)
+            lastCrop = if (capMode == 1) crop else null
             val id = when (capMode) {
                 0 -> TemplateStore.save(crop)
                 1 -> ScreenCheck.hex(ScreenCheck.meanColor(crop, Rect(0, 0, w, h)))

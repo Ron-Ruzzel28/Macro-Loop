@@ -24,7 +24,13 @@ object DebugState {
     var extra by mutableStateOf<List<Matcher.Result>>(emptyList())
         private set
 
+    private var lastAt = 0L
+
     fun record(frame: Bitmap, res: Matcher.Result?, thresholdPct: Int, label: String, others: List<Matcher.Result> = emptyList()) {
+        // A scaled copy of the screen is slow, and a fast macro looks many times a second: keep only now and then.
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastAt < 700 && res?.found != true) return
+        lastAt = now
         extra = others
         val h = (frame.height * PREVIEW_WIDTH.toFloat() / frame.width).toInt()
         preview = Bitmap.createScaledBitmap(frame, PREVIEW_WIDTH, h, true)

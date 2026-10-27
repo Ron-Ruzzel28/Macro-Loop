@@ -111,7 +111,7 @@ data class Step(
     val clicks: Int = 1,                // how many clicks in a row (1 to 99)
     val repeatCount: Int = 1,           // run the whole step this many times
     val delayMs: Long = 0,              // wait before this step
-    val waitNextMs: Long = 100,         // wait after this step
+    val waitNextMs: Long = 70,          // wait after this step
     val randomizePx: Int = 0,           // random offset on every tap
     val clickGapMs: Long = 90,          // wait between the clicks of a double or triple click
     val twoFingers: Boolean = false,    // tap or hold with two fingers at once
@@ -282,13 +282,14 @@ data class Macro(
     val stuckSec: Int = 0,                    // 0 = off. The screen not changing for this long counts as stuck
     val stuck: List<Step> = emptyList(),      // what to do when stuck; empty = stop the macro with a message
     val schedule: Schedule = Schedule(),
+    val scan: Boolean = true,                 // Scan mode: a picture is looked at once and the step is skipped if it is not there; the list loops
 ) {
     /** Every list of steps in the macro: the main job, the watchers and the stuck rescue. */
     val lists: List<List<Step>> get() = listOf(steps, watchers, stuck)
 
     fun summary(): String {
         val s = if (steps.size == 1) "1 step" else "${steps.size} steps"
-        val r = if (repeat == 1) "runs once" else "repeats $repeat times"
+        val r = if (repeat == 1) "runs once" else if (repeat <= 0) "repeats until stopped" else "repeats $repeat times"
         return "$s, $r"
     }
 
@@ -303,6 +304,7 @@ data class Macro(
         .put("sharedBy", sharedBy)
         .put("landscape", landscape)
         .put("stuckSec", stuckSec)
+        .put("scan", scan)
         .put("schedule", schedule.toJson())
         .put("counters", JSONArray().also { a -> counters.forEach { a.put(JSONObject().put("name", it.name).put("keep", it.keep)) } })
         .put("watchers", JSONArray().also { a -> watchers.forEach { a.put(it.toJson()) } })
@@ -315,7 +317,7 @@ data class Macro(
             return Macro(
                 id = o.getString("id"),
                 name = o.getString("name"),
-                repeat = o.optInt("repeat", 1).coerceAtLeast(1),
+                repeat = o.optInt("repeat", 1).coerceAtLeast(0),
                 updatedAt = o.optLong("updatedAt"),
                 game = o.optString("game", ""),
                 version = o.optString("version", "1.0.0"),
@@ -323,6 +325,7 @@ data class Macro(
                 sharedBy = o.optString("sharedBy", ""),
                 landscape = o.optBoolean("landscape", false),
                 stuckSec = o.optInt("stuckSec", 0),
+                scan = o.optBoolean("scan", true),
                 schedule = Schedule.fromJson(o.optJSONObject("schedule")),
                 counters = o.optJSONArray("counters")?.let { c -> List(c.length()) { CounterDef(c.getJSONObject(it).getString("name"), c.getJSONObject(it).optBoolean("keep", false)) } } ?: emptyList(),
                 watchers = o.optJSONArray("watchers")?.let { w -> List(w.length()) { Step.fromJson(w.getJSONObject(it)) } } ?: emptyList(),
