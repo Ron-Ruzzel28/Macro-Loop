@@ -198,6 +198,9 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         return out
     }
 
+    private fun gotoFlow(step: Step, where: String): Flow =
+        if (step.targetId.isEmpty()) Flow.Stop("Stopped: the Go to step $where has no target. Edit it and choose one.") else Flow.Jump(step.targetId)
+
     private suspend fun runLink(macroName: String, where: String, step: Step, prevOk: Boolean, state: RunState): StepResult {
         if (step.targetId.isEmpty()) {
             return StepResult(Flow.Stop("Stopped: the link in step $where has no step chosen. Edit it and pick one."), false)
@@ -275,18 +278,17 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                 return StepResult(Flow.Next, true)
             }
             StepType.WATCH -> return StepResult(Flow.Next, prevOk)
-            StepType.STOP_MACRO -> return StepResult(Flow.Stop("Stopped by a Stop step ($where)."), true)
-            StepType.GOTO -> return StepResult(
-                if (step.targetId.isEmpty()) Flow.Stop("Stopped: the Go to step $where has no target. Edit it and choose one.")
-                else Flow.Jump(step.targetId),
-                true,
-            )
+            // Stop and Go to may have conditions: then they act only when the conditions hold.
+            StepType.STOP_MACRO -> if (step.conditions.none { it.enabled }) return StepResult(Flow.Stop("Stopped by a Stop step ($where)."), true)
+            StepType.GOTO -> if (step.conditions.none { it.enabled }) return StepResult(gotoFlow(step, where), true)
             else -> Unit
         }
         if (step.delayMs > 0) waitWatching(step.delayMs, state)
 
         var outcome: Outcome = Outcome.Ok
         if (step.conditions.isNotEmpty()) outcome = waitConditions(step, where, prevOk, state)
+        if (outcome is Outcome.Ok && step.type == StepType.STOP_MACRO) return StepResult(Flow.Stop("Stopped by a Stop step ($where)."), true)
+        if (outcome is Outcome.Ok && step.type == StepType.GOTO) return StepResult(gotoFlow(step, where), true)
         if (outcome is Outcome.Ok) {
             for (r in 1..step.repeatCount) {
                 outcome = if (step.type == StepType.RUN_JOB) runJobStep(macroName, where, step, state) else host.perform(step, where)

@@ -1344,6 +1344,7 @@ class EditorOverlay(
         }
         val logical = s.type != StepType.WAIT && s.type != StepType.STOP_MACRO && s.type != StepType.GOTO && s.type != StepType.LINK &&
             s.type != StepType.COUNTER_ADD && s.type != StepType.COUNTER_RESET
+        val conditional = logical || s.type == StepType.STOP_MACRO || s.type == StepType.GOTO
         fun add(text: String, icon: Icon?, color: Int = TokenInts.text, act: () -> Unit) = rows.add(Row(text, color, icon, action = act))
 
         when (s.type) {
@@ -1404,7 +1405,7 @@ class EditorOverlay(
         add("Test this step", Icon.PLAY, TokenInts.success) { runTest(1, ref) }
         add("Test from this step", Icon.PLAY, TokenInts.success) { runTest(2, ref) }
         add("Add Action (Above)", Icon.PLUS) { openActionPicker(Target(ref.path, insertAt = ref.index)) }
-        if (logical) add("Add Condition", Icon.PLUS) { openConditionPicker(ref) }
+        if (conditional) add("Add Condition", Icon.PLUS) { openConditionPicker(ref) }
         add("Replace Action", Icon.REDO) { openActionPicker(Target(ref.path, replace = ref.index)) }
         add("Rename", Icon.PENCIL) { renameDialog(ref) }
         if (logical) {
