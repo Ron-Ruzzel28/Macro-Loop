@@ -2806,18 +2806,26 @@ class EditorOverlay(
         capPanel?.visibility = View.INVISIBLE
         scope.launch {
             CaptureService.instance?.fast = true
+            val hiddenAt = SystemClock.elapsedRealtime()
             delay(450)
-            var frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 100, 400)
-            // A flat white (or flat black) picture means the screen was not ready: look again, up to 4 times.
-            var tries = 0
-            while (frame != null && ScreenCheck.isBlank(frame) && tries < 4) {
-                tries++
+            // A busy phone (a long step list, a game behind) can be slow to draw the screen without the box.
+            // Only a picture taken after the box was hidden counts, and one that still shows the box, a flat
+            // white or black screen, or nothing at all is thrown away and looked at again.
+            var frame: Bitmap? = null
+            var why = ""
+            for (attempt in 0 until 7) {
+                val f = CaptureService.grabFresh(hiddenAt + 200, 900)
+                when {
+                    f == null -> why = "Could not see the screen."
+                    ScreenCheck.isBlank(f) -> why = "The screen was blank."
+                    ScreenCheck.markerShows(f, region) -> why = "The green square was still on the screen."
+                    else -> { frame = f; break }
+                }
                 delay(350)
-                frame = CaptureService.grabFresh(SystemClock.elapsedRealtime() - 100, 500)
             }
             CaptureService.instance?.fast = false
             if (frame == null) {
-                toast("Could not see the screen. Try again.")
+                toast("$why Your phone is busy; wait a second and press the tick again.")
                 capBox?.visibility = View.VISIBLE
                 capPanel?.visibility = View.VISIBLE
                 return@launch

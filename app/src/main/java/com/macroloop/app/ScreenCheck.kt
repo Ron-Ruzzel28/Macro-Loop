@@ -107,6 +107,35 @@ object ScreenCheck {
         return true
     }
 
+    /**
+     * True when the capture box itself is in the picture: its border is a solid line of one colour along all
+     * four edges of the area. A real screen almost never has that.
+     */
+    fun markerShows(frame: Bitmap, region: Rect): Boolean {
+        val x0 = region.left.coerceIn(0, frame.width - 1)
+        val y0 = region.top.coerceIn(0, frame.height - 1)
+        val x1 = (region.right - 1).coerceIn(x0, frame.width - 1)
+        val y1 = (region.bottom - 1).coerceIn(y0, frame.height - 1)
+        if (x1 - x0 < 6 || y1 - y0 < 6) return false
+        val inset = 2
+        fun teal(p: Int): Boolean {
+            val r = (p shr 16) and 255; val g = (p shr 8) and 255; val b = p and 255
+            return kotlin.math.abs(r - 0x2D) < 28 && kotlin.math.abs(g - 0xD4) < 28 && kotlin.math.abs(b - 0xBF) < 28
+        }
+        fun share(count: Int, get: (Int) -> Int): Float {
+            var hit = 0
+            for (i in 0 until count) if (teal(get(i))) hit++
+            return hit.toFloat() / count
+        }
+        val w = x1 - x0 + 1
+        val h = y1 - y0 + 1
+        val top = share(w) { frame.getPixel(x0 + it, y0 + inset) }
+        val bottom = share(w) { frame.getPixel(x0 + it, y1 - inset) }
+        val left = share(h) { frame.getPixel(x0 + inset, y0 + it) }
+        val right = share(h) { frame.getPixel(x1 - inset, y0 + it) }
+        return listOf(top, bottom, left, right).count { it > 0.6f } >= 3
+    }
+
     fun hex(color: Int) = "#%06X".format(color and 0xFFFFFF)
 
     fun colorChanged(base: Int, now: Int, tolerancePct: Int) = abs(distancePct(base, now)) > tolerancePct
@@ -145,6 +174,12 @@ object ScreenCheck {
         check("other words are not found", !textMatches(read, "level up"))
         check("a flat white picture is blank", isBlank(Bitmap.createBitmap(200, 400, Bitmap.Config.ARGB_8888).also { it.eraseColor(0xFFFFFFFF.toInt()) }))
         check("a real screen is not blank", !isBlank(bmp))
+        val withBox = bmp.copy(Bitmap.Config.ARGB_8888, true)
+        val boxCv = android.graphics.Canvas(withBox)
+        val line = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 8f; color = 0xFF2DD4BF.toInt() }
+        boxCv.drawRect(60f + 4f, 60f + 4f, 220f - 4f, 160f - 4f, line)
+        check("capture box still on screen is noticed", markerShows(withBox, Rect(60, 60, 220, 160)))
+        check("clean screen has no capture box", !markerShows(bmp, Rect(60, 60, 220, 160)))
         out.add(0, "Screen checks: $passed of $total")
         return out
     }
