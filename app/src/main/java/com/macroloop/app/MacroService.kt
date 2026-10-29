@@ -447,6 +447,15 @@ class MacroService : AccessibilityService() {
         private fun wrongWay(where: String) =
             Outcome.Fatal("Stopped: step $where was made with the phone held the other way. Turn the phone and press Play again.")
 
+        /** Android would not carry out a touch. In Scan mode the step is skipped (and said in Run history); otherwise the macro stops. */
+        private fun refused(what: String, where: String): Outcome {
+            val text = "the $what in step $where was cancelled by Android"
+            return if (scan) {
+                problems.add(text)
+                Outcome.Missing(text)
+            } else Outcome.Fatal("Stopped: $text.")
+        }
+
         private suspend fun clickStep(step: Step, where: String): Outcome {
             val f = fit(step) ?: return wrongWay(where)
             return clickAt(step, (step.x * f.first).toInt() + step.offsetX, (step.y * f.second).toInt() + step.offsetY, where)
@@ -456,7 +465,13 @@ class MacroService : AccessibilityService() {
             val f = fit(step) ?: return wrongWay(where)
             val s = step.copy(x = (step.x * f.first).toInt(), y = (step.y * f.second).toInt(), x2 = (step.x2 * f.first).toInt(), y2 = (step.y2 * f.second).toInt())
             note("swipe (${s.x}, ${s.y}) to (${s.x2}, ${s.y2})")
-            return if (swipe(s, human)) Outcome.Ok else Outcome.Fatal("Stopped: the swipe in step $where was cancelled by Android.")
+            var done = swipe(s, human)
+            for (wait in longArrayOf(120, 300, 700)) {
+                if (done) break
+                delay(wait)
+                done = swipe(s, human)
+            }
+            return if (done) Outcome.Ok else refused("swipe", where)
         }
 
         private var cachedFrame: Bitmap? = null
@@ -604,13 +619,16 @@ class MacroService : AccessibilityService() {
             if (step.holdUntil != null) return holdUntilTap(step, x, y, where)
             flashTap(x, y)
             for (n in 1..step.clicks) {
-                if (!tapOnce(x, y, step, human)) {
-                    // Android turns a tap down now and then (another touch at the same moment). Once more, then say so.
-                    delay(120)
-                    if (!tapOnce(x, y, step, human)) {
-                        note("Android refused the tap at ($x, $y)")
-                        return Outcome.Fatal("Stopped: the tap in step $where was cancelled by Android.")
-                    }
+                var done = tapOnce(x, y, step, human)
+                // Android turns a tap down now and then (another touch at the same moment, or a busy phone). Try again a few times.
+                for (wait in longArrayOf(120, 300, 700)) {
+                    if (done) break
+                    delay(wait)
+                    done = tapOnce(x, y, step, human)
+                }
+                if (!done) {
+                    note("Android refused the tap at ($x, $y)")
+                    return refused("tap", where)
                 }
                 note("tapped ($x, $y)")
                 if (n < step.clicks) {
@@ -634,7 +652,13 @@ class MacroService : AccessibilityService() {
                 Path().apply { moveTo((px + jitter(spread)).coerceAtLeast(0).toFloat(), (y + jitter(spread)).coerceAtLeast(0).toFloat()) }
             }
             var strokes = paths.map { GestureDescription.StrokeDescription(it, 0, HOLD_SEGMENT_MS, true) }
-            if (!dispatchAll(strokes)) return Outcome.Fatal("Stopped: the hold in step $where was cancelled by Android.")
+            var started0 = dispatchAll(strokes)
+            for (wait in longArrayOf(120, 300, 700)) {
+                if (started0) break
+                delay(wait)
+                started0 = dispatchAll(strokes)
+            }
+            if (!started0) return refused("hold", where)
             val started = SystemClock.elapsedRealtime()
             while (true) {
                 val next = strokes.mapIndexed { i, st -> st.continueStroke(paths[i], 0, HOLD_SEGMENT_MS, true) }
@@ -646,7 +670,7 @@ class MacroService : AccessibilityService() {
                     holds = look.await()
                     ok
                 }
-                if (!sent) return Outcome.Fatal("Stopped: the hold in step $where was cancelled by Android.")
+                if (!sent) return refused("hold", where)
                 strokes = next
                 val over = SystemClock.elapsedRealtime() - started >= step.holdMaxMs
                 if (holds || over) {
