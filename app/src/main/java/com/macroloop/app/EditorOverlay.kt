@@ -763,7 +763,7 @@ class EditorOverlay(
     }
 
     private fun conditionContent(c: Condition): Pair<View, String?> = when (c.kind) {
-        ConditionKind.IMAGE -> imageContent(c.templateId, c.mustAppear, c.threshold) to (if (c.wholeScreen) "[Whole Screen]" else "[Captured Location]")
+        ConditionKind.IMAGE -> imageContent(c.templateId, c.mustAppear, c.threshold) to locText(c.wholeScreen, c.exact)
         ConditionKind.ACTION_RESULT -> label("Action Result  [${if (c.resultOk) "Success" else "Failed"}]", 13f, TokenInts.text) to null
         ConditionKind.RANDOM -> label("Random True  [${c.percent}%]", 13f, TokenInts.text) to null
         ConditionKind.ONCE -> label("Once True", 13f, TokenInts.text) to null
@@ -829,7 +829,7 @@ class EditorOverlay(
         var rows = 0
         if (s.type == StepType.CLICK_IMAGE) {
             tree.addView(
-                treeRow("✓", true, imageContent(s.templateId, true, s.threshold), if (s.wholeScreen) "[Whole Screen]" else "[Captured Location]", help = HelpTopics.byId("own_picture")) {
+                treeRow("✓", true, imageContent(s.templateId, true, s.threshold), locText(s.wholeScreen, s.exact), help = HelpTopics.byId("own_picture")) {
                     openOwnPictureMenu(ref)
                 },
             )
@@ -1234,7 +1234,7 @@ class EditorOverlay(
             StepType.CLICK_IMAGE -> newOrExist { box, id, fw, fh ->
                 val n = flat(root).count { it.type == StepType.CLICK_IMAGE } + 1
                 finishAdd(target, Step(
-                    StepType.CLICK_IMAGE, templateId = id, label = "Image $n", wholeScreen = false, threshold = takeSuggested() ?: 90,
+                    StepType.CLICK_IMAGE, templateId = id, label = "Image $n", wholeScreen = false, exact = true, threshold = takeSuggested() ?: 70,
                     boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
                 ))
             }
@@ -1608,7 +1608,7 @@ class EditorOverlay(
         newOrExist { box, id, fw, fh ->
             val c = Condition(
                 kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = false,
-                label = "Hold ${ref.index + 1}", threshold = takeSuggested() ?: 90,
+                label = "Hold ${ref.index + 1}", exact = true, threshold = takeSuggested() ?: 70,
                 boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
             )
             edit(ref) { it.copy(holdUntil = c, clicks = 1) }
@@ -1649,10 +1649,10 @@ class EditorOverlay(
                 },
                 Row("Auto-tune Similarity", icon = Icon.GEAR) {
                     closeMenu()
-                    autoTune(h.templateId, h.boxX, h.boxY, h.boxW, h.boxH, h.capW, h.wholeScreen) { v -> upd { it.copy(threshold = v) } }
+                    autoTune(h.templateId, h.boxX, h.boxY, h.boxW, h.boxH, h.capW, h.wholeScreen, h.exact) { v -> upd { it.copy(threshold = v) } }
                 },
                 Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(h.threshold) { v -> upd { it.copy(threshold = v) } } },
-                Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(h.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } },
+                Row("Edit Detect Location", icon = Icon.PENCIL) { pictureLocationDialog(h.wholeScreen, h.exact) { w, e -> upd { it.copy(wholeScreen = w, exact = e) } } },
                 Row("Edit Longest Hold", icon = Icon.PENCIL) {
                     var secs: EditText? = null
                     showForm("Longest Hold", "If the picture has not ${if (h.mustAppear) "appeared" else "disappeared"} by then, the press is let go and the step counts as FALSE (its If false steps and links run).", { b ->
@@ -1661,7 +1661,7 @@ class EditorOverlay(
                 },
                 Row("Test Condition", TokenInts.success, Icon.PLAY) {
                     closeMenu()
-                    testMatch(h.templateId, h.boxX, h.boxY, h.boxW, h.boxH, h.capW, h.threshold, h.wholeScreen, h.mustAppear, h.label)
+                    testMatch(h.templateId, h.boxX, h.boxY, h.boxW, h.boxH, h.capW, h.threshold, h.wholeScreen, h.mustAppear, h.label, h.exact)
                 },
                 Row("Remove Hold Until", TokenInts.danger, Icon.CLOSE) {
                     closeMenu(); edit(ref) { it.copy(holdUntil = null) }; refreshPanel()
@@ -1718,14 +1718,14 @@ class EditorOverlay(
                 Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeImage(ref, false) },
                 Row("Auto-tune Similarity", icon = Icon.GEAR) {
                     closeMenu()
-                    autoTune(s.templateId, s.boxX, s.boxY, s.boxW, s.boxH, s.capW, s.wholeScreen) { v -> edit(ref) { it.copy(threshold = v) } }
+                    autoTune(s.templateId, s.boxX, s.boxY, s.boxW, s.boxH, s.capW, s.wholeScreen, s.exact) { v -> edit(ref) { it.copy(threshold = v) } }
                 },
                 Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(s.threshold) { v -> edit(ref) { it.copy(threshold = v) } } },
-                Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(s.wholeScreen) { v -> edit(ref) { it.copy(wholeScreen = v) } } },
+                Row("Edit Detect Location", icon = Icon.PENCIL) { pictureLocationDialog(s.wholeScreen, s.exact) { w, e -> edit(ref) { it.copy(wholeScreen = w, exact = e) } } },
                 Row("Edit Image", icon = Icon.PENCIL) { editImageDialog(ref) },
                 Row("Test Condition", TokenInts.success, Icon.PLAY) {
                     closeMenu()
-                    testMatch(s.templateId, s.boxX, s.boxY, s.boxW, s.boxH, s.capW, s.threshold, s.wholeScreen, true, "the picture")
+                    testMatch(s.templateId, s.boxX, s.boxY, s.boxW, s.boxH, s.capW, s.threshold, s.wholeScreen, true, "the picture", s.exact)
                 },
             ),
         )
@@ -1747,16 +1747,16 @@ class EditorOverlay(
                 rows.add(Row("Change Image", icon = Icon.PENCIL) { closeMenu(); changeConditionImage(ref, j, true) })
                 rows.add(Row("Auto-tune Similarity", icon = Icon.GEAR) {
                     closeMenu()
-                    autoTune(c.templateId, c.boxX, c.boxY, c.boxW, c.boxH, c.capW, c.wholeScreen) { v -> upd { it.copy(threshold = v) } }
+                    autoTune(c.templateId, c.boxX, c.boxY, c.boxW, c.boxH, c.capW, c.wholeScreen, c.exact) { v -> upd { it.copy(threshold = v) } }
                 })
                 rows.add(Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(c.threshold) { v -> upd { it.copy(threshold = v) } } })
-                rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(c.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } })
+                rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { pictureLocationDialog(c.wholeScreen, c.exact) { w, e -> upd { it.copy(wholeScreen = w, exact = e) } } })
                 rows.add(Row(if (c.mustAppear) "Change to Not appear" else "Change to Appears", icon = Icon.REDO) {
                     closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
                 })
                 rows.add(Row("Test Condition", TokenInts.success, Icon.PLAY) {
                     closeMenu()
-                    testMatch(c.templateId, c.boxX, c.boxY, c.boxW, c.boxH, c.capW, c.threshold, c.wholeScreen, c.mustAppear, c.label)
+                    testMatch(c.templateId, c.boxX, c.boxY, c.boxW, c.boxH, c.capW, c.threshold, c.wholeScreen, c.mustAppear, c.label, c.exact)
                 })
             }
             ConditionKind.ACTION_RESULT -> rows.add(Row("Change to " + if (c.resultOk) "Failed" else "Success", icon = Icon.REDO) {
@@ -1787,12 +1787,54 @@ class EditorOverlay(
         showMenu("Condition", rows)
     }
 
+    /** A slider from 0 to 100, with the number big beside it and minus / plus for single steps. */
     private fun similarityDialog(current: Int, onSave: (Int) -> Unit) {
-        var f: EditText? = null
-        showForm("Similarity %", "How alike the picture on screen must be to the saved picture. Higher is stricter. 70 to 99.", { b ->
-            f = field(b, "Similarity (%)", current.toString())
-        }, { onSave((f?.text.toString().toIntOrNull() ?: current).coerceIn(70, 99)) })
+        var v = current.coerceIn(0, 100)
+        showDialogBox("Similarity %") { box ->
+            val num = label("$v%", 30f, TokenInts.text).apply { gravity = Gravity.CENTER }
+            lateinit var bar: android.widget.SeekBar
+            fun set(x: Int) {
+                v = x.coerceIn(0, 100)
+                num.text = "$v%"
+                if (bar.progress != v) bar.progress = v
+            }
+            bar = android.widget.SeekBar(ctx).apply {
+                max = 100
+                progress = v
+                progressTintList = android.content.res.ColorStateList.valueOf(TokenInts.primary)
+                thumbTintList = android.content.res.ColorStateList.valueOf(TokenInts.primary)
+                setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: android.widget.SeekBar?, p: Int, fromUser: Boolean) { if (fromUser) set(p) }
+                    override fun onStartTrackingTouch(sb: android.widget.SeekBar?) = Unit
+                    override fun onStopTrackingTouch(sb: android.widget.SeekBar?) = Unit
+                })
+            }
+            box.addView(num, lp(10))
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            row.addView(textButton("−") { set(v - 1) }.apply { textSize = 24f })
+            row.addView(bar, LinearLayout.LayoutParams(0, dp(48), 1f))
+            row.addView(textButton("+") { set(v + 1) }.apply { textSize = 24f })
+            box.addView(row, lp(6))
+            box.addView(label("How alike the picture on screen must be to the saved picture. Higher is stricter. Below about 50% almost anything matches. 70 is a good start for a picture searched in its own spot.", 12f, TokenInts.textMuted), lp(8))
+            val buttons = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
+            buttons.addView(textButton("CANCEL") { closeMenu() })
+            buttons.addView(textButton("SAVE") {
+                onSave(v)
+                closeMenu()
+                refreshPanelIfOpen()
+            })
+            box.addView(buttons, lp(10))
+        }
     }
+
+    private fun pictureLocationDialog(whole: Boolean, exact: Boolean, onSave: (Boolean, Boolean) -> Unit) {
+        val cur = if (whole) 2 else if (exact) 0 else 1
+        showChoice("Detect Location", listOf("Exact spot (only the square you drew, plus a few pixels)", "Near (around the square you drew)", "Whole screen"), cur) { k ->
+            onSave(k == 2, k == 0)
+        }
+    }
+
+    private fun locText(whole: Boolean, exact: Boolean) = if (whole) "[Whole Screen]" else if (exact) "[Exact Spot]" else "[Captured Location]"
 
     private fun detectLocationDialog(whole: Boolean, onSave: (Boolean) -> Unit) {
         showChoice("Detect Location", listOf("Captured location (look near where it was captured)", "Whole screen"), if (whole) 1 else 0) { k ->
@@ -1971,7 +2013,7 @@ class EditorOverlay(
             val n = (stepAt(ref)?.conditions?.size ?: 0)
             val c = Condition(
                 kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = false,
-                label = "Condition ${ref.index + 1}${('a' + n)}", threshold = takeSuggested() ?: 90,
+                label = "Condition ${ref.index + 1}${('a' + n)}", exact = true, threshold = takeSuggested() ?: 70,
                 boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
             )
             edit(ref) { it.copy(conditions = it.conditions + c) }
@@ -2366,7 +2408,7 @@ class EditorOverlay(
     private suspend fun lowestMatch(crop: Bitmap, box: Rect, frameW: Int, frameH: Int): Int? {
         var lowest = 100
         var looks = 0
-        val region = Matcher.nearRegion(box.left, box.top, box.width(), box.height(), 1.0, frameW, frameH)
+        val region = Matcher.exactRegion(box.left, box.top, box.width(), box.height(), 1.0, frameW, frameH)
         repeat(7) {
             val f = CaptureService.grabFresh(SystemClock.elapsedRealtime(), 250) ?: return@repeat
             val r = withContext(Dispatchers.Default) { Matcher.find(f, crop, region, 40) }
@@ -2508,7 +2550,7 @@ class EditorOverlay(
      * Looks at the screen right now and sets the similarity a little under how well the saved picture matches,
      * so it is found every time but a look-alike is not. The picture has to be on screen.
      */
-    private fun autoTune(templateId: String, bx: Int, by: Int, bw: Int, bh: Int, capW: Int, whole: Boolean, onSet: (Int) -> Unit) {
+    private fun autoTune(templateId: String, bx: Int, by: Int, bw: Int, bh: Int, capW: Int, whole: Boolean, exact: Boolean, onSet: (Int) -> Unit) {
         val t = TemplateStore.load(templateId)
         if (t == null) {
             toast("This picture is missing. Use Change Image.")
@@ -2532,7 +2574,7 @@ class EditorOverlay(
                 return@launch
             }
             val scale = if (capW > 0) frame.width.toDouble() / capW else 1.0
-            val region = if (whole) null else Matcher.nearRegion(bx, by, bw, bh, scale, frame.width, frame.height)
+            val region = Matcher.regionFor(whole, exact, bx, by, bw, bh, scale, frame.width, frame.height)
             val res = withContext(Dispatchers.Default) { Matcher.find(frame, t, region, 40, scale) }
             val first = (res.score * 100).toInt()
             // Look several times, so a picture that glows or moves is judged by its weakest look, not its best one.
@@ -2555,9 +2597,9 @@ class EditorOverlay(
             setHidden(false)
             when {
                 res.tooPlain -> toast("That picture is too plain to find. Re-crop it with more detail.")
-                lowest < 65 -> toast("Best match is only $lowest%. Open the screen where the picture is, then try Auto-tune.")
+                lowest < 45 -> toast("Best match is only $lowest%. Open the screen where the picture is, then try Auto-tune.")
                 else -> {
-                    val v = (lowest - 6).coerceIn(65, 96)
+                    val v = (lowest - 6).coerceIn(40, 96)
                     onSet(v)
                     dirty = true
                     toast(if (highest - lowest >= 8) "It matches between $lowest% and $highest% (it changes on screen). Similarity set to $v%."
@@ -2799,8 +2841,8 @@ class EditorOverlay(
                 CaptureService.instance?.fast = true
                 val lo = lowestMatch(crop, Rect(x, y, x + w, y + h), frame.width, frame.height)
                 CaptureService.instance?.fast = false
-                if (lo != null && lo < 88) {
-                    suggestedThreshold = (lo - 6).coerceIn(65, 96)
+                if (lo != null && lo - 6 < 70) {
+                    suggestedThreshold = (lo - 6).coerceIn(40, 70)
                     toast("This picture changes a little on screen (a glow or animation). Similarity set to $suggestedThreshold%.")
                 }
             }
@@ -2896,7 +2938,7 @@ class EditorOverlay(
     // ================================================================ tests
 
     /** Looks for one picture right now and shows where it is, with the score and the time it took. */
-    private fun testMatch(templateId: String, bx: Int, by: Int, bw: Int, bh: Int, capW: Int, threshold: Int, whole: Boolean, mustAppear: Boolean, name: String) {
+    private fun testMatch(templateId: String, bx: Int, by: Int, bw: Int, bh: Int, capW: Int, threshold: Int, whole: Boolean, mustAppear: Boolean, name: String, exact: Boolean = false) {
         val t = TemplateStore.load(templateId)
         if (t == null) {
             toast("This picture is missing. Use Change Image.")
@@ -2918,7 +2960,7 @@ class EditorOverlay(
                 return@launch
             }
             val scale = if (capW > 0) frame.width.toDouble() / capW else 1.0
-            val region = if (whole) null else Matcher.nearRegion(bx, by, bw, bh, scale, frame.width, frame.height)
+            val region = Matcher.regionFor(whole, exact, bx, by, bw, bh, scale, frame.width, frame.height)
             val res = withContext(Dispatchers.Default) { Matcher.find(frame, t, region, threshold, scale) }
             DebugState.record(frame, res, threshold, name)
             if (!res.tooPlain) showFlash(res)

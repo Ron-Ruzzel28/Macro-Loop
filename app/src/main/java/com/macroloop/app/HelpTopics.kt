@@ -122,12 +122,14 @@ object HelpTopics {
         t("delete", "Delete", "Removes the step.", "", "", "Deleting a step that links point to. The links break and the macro stops there.")
         t("disable", "Disable / Enable", "Skips the step without deleting it.", "Turn off a step while you test something else.", "Easier than deleting when you are not sure.")
         t("cond_off", "Turn Off (keep it)", "Ignores this condition without deleting it.", "Try the step without the condition, then turn it back on.")
-        t("similarity", "Edit Similarity %", "How much the picture on screen must look like the saved one. Higher is stricter.", "", "Start at 90. Lower it to 80-85 if it is missed. Raise it if it taps the wrong thing.", "Setting it very low. It will tap look-alikes.")
+        t("similarity", "Edit Similarity %", "How much the picture on screen must look like the saved one. Higher is stricter. Use the slider.", "", "New pictures start at 70 in their exact spot. Lower it if the picture is missed. Raise it if it taps the wrong thing.", "Setting it very low. It will tap look-alikes.")
         t("auto_tune", "Auto-tune Similarity", "Looks at the screen for about a second and sets the similarity just under the picture's weakest match. A picture that glows or moves gets a lower number automatically. The picture must be on the screen.",
             "The button matches at 97%, so it is set to 91%: found every time, but a look-alike is not.", "Do it on the real screen where the picture really shows.", "Doing it on a different screen. It will say the match is too low.")
         t("pick_colour", "Pick Colour Again", "Draw the box again, then tap the picture to choose the exact colour. Fine-tune with the sliders or the hex box.",
             "Tap the green of a health bar to take exactly that green.", "Tap a spot in the middle of the colour, not on an edge where colours mix.")
-        t("detect_location", "Edit Detect Location", "Look near where the picture was captured, or search the whole screen.", "", "Whole screen is easiest. Choose near the capture spot to be faster and avoid look-alikes elsewhere.")
+        t("detect_location", "Edit Detect Location", "Exact spot looks only at the square you drew (plus a few pixels). Near looks around it. Whole screen looks everywhere.",
+            "A button that is always in the same place: Exact spot. A picture that moves around: Whole screen.",
+            "Exact spot is the fastest and steadiest, and cannot jump to a look-alike elsewhere.", "Exact spot for a picture that moves. It will not be found.")
         t("change_appear", "Change to Appears / Not appear", "Switch between \"the picture is there\" and \"the picture is gone\".", "")
         t("test_condition", "Test Condition", "Looks at the screen right now and says if the picture is found.", "", "Use it on the real screen before you trust a condition.")
         t("chance", "Edit Chance %", "How often the random condition is true.", "")

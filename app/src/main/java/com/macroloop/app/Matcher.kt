@@ -54,6 +54,23 @@ object Matcher {
         )
     }
 
+    /** Only the drawn square, with a few pixels of margin for a tiny shift. Nothing else on the screen is looked at. */
+    fun exactRegion(boxX: Int, boxY: Int, boxW: Int, boxH: Int, scale: Double, frameW: Int, frameH: Int, margin: Int = 10): android.graphics.Rect {
+        val m = (margin * scale).toInt().coerceAtLeast(4)
+        val x = (boxX * scale).toInt()
+        val y = (boxY * scale).toInt()
+        val w = (boxW * scale).toInt()
+        val h = (boxH * scale).toInt()
+        return android.graphics.Rect(max(0, x - m), max(0, y - m), min(frameW, x + w + m), min(frameH, y + h + m))
+    }
+
+    /** Where to look: null = the whole screen, else the exact spot or the area around it. */
+    fun regionFor(whole: Boolean, exact: Boolean, boxX: Int, boxY: Int, boxW: Int, boxH: Int, scale: Double, frameW: Int, frameH: Int): android.graphics.Rect? = when {
+        whole -> null
+        exact -> exactRegion(boxX, boxY, boxW, boxH, scale, frameW, frameH)
+        else -> nearRegion(boxX, boxY, boxW, boxH, scale, frameW, frameH)
+    }
+
     private const val COARSE_LIMIT_PIXELS = 400_000.0
     private val FLEX_FACTORS = doubleArrayOf(1.0, 0.94, 1.06, 0.88, 1.12)
 

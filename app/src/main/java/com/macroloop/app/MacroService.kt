@@ -550,8 +550,7 @@ class MacroService : AccessibilityService() {
             val frame = sharedFrame()
                 ?: return ImageCheck(false, "\"${c.label}\" could not be checked, the screen is not visible")
             val scale = if (c.capW > 0) frame.width.toDouble() / c.capW else 1.0
-            val region = if (c.wholeScreen) null
-            else Matcher.nearRegion(c.boxX, c.boxY, c.boxW, c.boxH, scale, frame.width, frame.height)
+            val region = Matcher.regionFor(c.wholeScreen, c.exact, c.boxX, c.boxY, c.boxW, c.boxH, scale, frame.width, frame.height)
             val key = "${c.templateId}|${region?.flattenToString()}|${c.threshold}|$scale"
             val r = findCache[key] ?: withContext(Dispatchers.Default) { Matcher.find(frame, t, region, c.threshold, scale) }.also { findCache[key] = it }
             DebugState.record(frame, r, c.threshold, c.label)
@@ -693,8 +692,7 @@ class MacroService : AccessibilityService() {
                 if (frame != null) {
                     if (step.capW > 0 && step.capH > 0 && (frame.width > frame.height) != (step.capW > step.capH)) return wrongWay(where)
                     val scale = if (step.capW > 0) frame.width.toDouble() / step.capW else 1.0
-                    val region = if (step.wholeScreen) null
-                    else Matcher.nearRegion(step.boxX, step.boxY, step.boxW, step.boxH, scale, frame.width, frame.height)
+                    val region = Matcher.regionFor(step.wholeScreen, step.exact, step.boxX, step.boxY, step.boxW, step.boxH, scale, frame.width, frame.height)
                     val hits: List<Matcher.Result> = withContext(Dispatchers.Default) {
                         if (step.matchAll) Matcher.findAll(frame, t, region, step.threshold, scale)
                         else {

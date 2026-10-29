@@ -31,6 +31,7 @@ data class Condition(
     val mustAppear: Boolean = true,     // IMAGE: false = the picture must NOT be on screen
     val threshold: Int = 90,
     val wholeScreen: Boolean = false,
+    val exact: Boolean = false,         // look only at the square that was drawn (plus a few pixels), not around it
     val boxX: Int = 0,
     val boxY: Int = 0,
     val boxW: Int = 0,
@@ -50,6 +51,7 @@ data class Condition(
         .put("templateId", templateId).put("label", label)
         .put("mustAppear", mustAppear).put("threshold", threshold)
         .put("wholeScreen", wholeScreen)
+        .put("exact", exact)
         .put("boxX", boxX).put("boxY", boxY).put("boxW", boxW).put("boxH", boxH)
         .put("capW", capW).put("capH", capH)
         .put("resultOk", resultOk).put("percent", percent)
@@ -64,6 +66,7 @@ data class Condition(
             mustAppear = o.optBoolean("mustAppear", true),
             threshold = o.optInt("threshold", 90),
             wholeScreen = o.optBoolean("wholeScreen", false),
+            exact = o.optBoolean("exact", false),
             boxX = o.optInt("boxX"), boxY = o.optInt("boxY"),
             boxW = o.optInt("boxW"), boxH = o.optInt("boxH"),
             capW = o.optInt("capW"), capH = o.optInt("capH"),
@@ -97,6 +100,7 @@ data class Step(
     val label: String = "",
     val threshold: Int = 90,            // percent, how exact the match must be
     val wholeScreen: Boolean = false,   // false = look near where the picture was picked
+    val exact: Boolean = false,         // true = look only at the square that was drawn (plus a few pixels)
     val timeoutMs: Long = 10_000,
     val skipIfMissing: Boolean = false, // false = stop the macro when not found
     val flexScale: Boolean = false,     // also try slightly bigger and smaller copies of the picture
@@ -168,6 +172,7 @@ data class Step(
         .put("label", label)
         .put("threshold", threshold)
         .put("wholeScreen", wholeScreen)
+        .put("exact", exact)
         .put("timeoutMs", timeoutMs)
         .put("skipIfMissing", skipIfMissing)
         .put("flexScale", flexScale)
@@ -210,6 +215,7 @@ data class Step(
             label = o.optString("label", ""),
             threshold = o.optInt("threshold", 90),
             wholeScreen = o.optBoolean("wholeScreen", false),
+            exact = o.optBoolean("exact", false),
             timeoutMs = o.optLong("timeoutMs", 10_000),
             skipIfMissing = o.optBoolean("skipIfMissing", false),
             flexScale = o.optBoolean("flexScale", false),

@@ -84,6 +84,15 @@ object SelfTest {
             cases += Case("7% bigger, size tolerance OFF", "info", true, desc(fixed) + " (score only)")
             cases += Case("7% bigger, size tolerance ON", "found", flex.found, desc(flex))
 
+            // 5b. exact spot: only the drawn square, a few pixels around it
+            val exactArea = Matcher.exactRegion(box.left, box.top, box.width(), box.height(), 1.0, W, H)
+            val exactHit = Matcher.find(frame, template, exactArea, 70)
+            cases += Case("Exact spot finds the picture where it was drawn", "found, in the right place", exactHit.found && close(exactHit, box), desc(exactHit))
+            cases += Case("Exact spot searches only the square plus a few pixels", "small area", exactArea.width() <= box.width() + 24 && exactArea.height() <= box.height() + 24, "${exactArea.width()} x ${exactArea.height()}")
+            val goneFrame = drawScreen(seed = 7, hideButton = true)
+            val exactGone = Matcher.find(goneFrame, template, exactArea, 70)
+            cases += Case("Exact spot, picture gone, even at 70%", "not found", !exactGone.found, desc(exactGone))
+
             // 6. picture missing
             val gone = drawScreen(seed = 7, hideButton = true)
             val missing = Matcher.find(gone, template, near, 90)
