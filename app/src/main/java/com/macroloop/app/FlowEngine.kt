@@ -59,6 +59,9 @@ interface StepHost {
     /** A line for the run's log: what happened, or why a step did nothing. Repeats are folded by the host. */
     fun note(text: String) {}
 
+    /** Nothing was done in this pass of the list: wait for the screen to change (a moment at most) before looking again. */
+    suspend fun idle() { pause(20) }
+
     /** A new look at a step's conditions begins: forget the colours that "changes" conditions compare against. */
     fun resetBaselines() {}
 
@@ -104,12 +107,15 @@ private class FlowSignal(val flow: Flow) : RuntimeException(null, null, false, f
 private class StepResult(val flow: Flow, val worked: Boolean)
 
 class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
+    /** How many times the list went round in the last run. */
+    var roundsDone = 0
+        private set
+
     private companion object {
         const val MAX_LINK_DEPTH = 20
         const val GUARD_EVERY_MS = 1000L
         const val WATCH_COOLDOWN_MS = 1500L
         const val MAX_RESCUES = 5
-        const val IDLE_PASS_MS = 120L
     }
 
 
@@ -123,7 +129,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         val root = macro.steps
         state.macro = macro
         state.scan = macro.scan
-        state.byId = collect(root + macro.watchers + macro.stuck)
+        state.byId = collect(root + macro.watchers + macro.stuck + macro.jobs.flatMap { it.steps })
         state.linkTargets = state.byId.values.filter { it.type == StepType.LINK && it.targetId.isNotEmpty() }.map { it.targetId }.toSet()
         state.keep = macro.counters.filter { it.keep }.map { it.name }.toSet()
         for (name in state.keep) state.counters[name] = host.counterLoad(macro.id, name)
@@ -137,9 +143,8 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
     }
 
     private suspend fun runRounds(macro: Macro, startList: List<Step>?, rounds: Int, state: RunState, root: List<Step>): String? {
-        // In Scan mode a pass where nothing was done does not count: the list is looked at again, until something happens.
-        // A rounds number of 0 means until stopped.
-        val loopIdle = state.scan
+        // Every trip through the list counts as one loop. A rounds number of 0 means until stopped.
+        // In Scan mode a trip where nothing was done waits for the screen to change, then the list starts again.
         var done = 0
         var round = 0
         while (rounds <= 0 || done < rounds) {
@@ -173,11 +178,9 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                     }
                 }
             }
-            if (loopIdle && !state.acted) {
-                host.pause(IDLE_PASS_MS)
-                continue
-            }
+            if (state.scan && !state.acted) host.idle()
             done++
+            roundsDone = done
         }
         return null
     }
@@ -210,6 +213,24 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         } finally {
             state.active.removeAt(state.active.lastIndex)
         }
+    }
+
+    /** Runs a whole job, then the caller carries on. A Stop or Go to inside the job ends or moves the whole macro. */
+    private suspend fun runJobStep(macroName: String, where: String, step: Step, state: RunState): Outcome {
+        val job = state.macro?.jobs?.firstOrNull { it.id == step.targetId }
+            ?: return Outcome.Missing("step $where runs a job that was deleted or never chosen")
+        val key = "job:" + job.id
+        if (key in state.active || state.active.size >= MAX_LINK_DEPTH) {
+            throw FlowSignal(Flow.Stop("Stopped: the job \"${job.name}\" runs itself (a loop). Change a Run job step inside it."))
+        }
+        state.active.add(key)
+        try {
+            val f = runList(macroName, job.steps, "job ${job.name}", state)
+            if (f !is Flow.Next) throw FlowSignal(f)
+        } finally {
+            state.active.removeAt(state.active.lastIndex)
+        }
+        return Outcome.Ok
     }
 
     private suspend fun runList(macroName: String, list: List<Step>, prefix: String, state: RunState): Flow {
@@ -268,7 +289,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         if (step.conditions.isNotEmpty()) outcome = waitConditions(step, where, prevOk, state)
         if (outcome is Outcome.Ok) {
             for (r in 1..step.repeatCount) {
-                outcome = host.perform(step, where)
+                outcome = if (step.type == StepType.RUN_JOB) runJobStep(macroName, where, step, state) else host.perform(step, where)
                 if (outcome !is Outcome.Ok) break
                 state.acted = true
             }
@@ -334,6 +355,22 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
                 state.firedAt[w.id] = host.now()
                 val f = runList(m.name, w.onSuccess, "watcher ${n + 1}", state)
                 state.firedAt[w.id] = host.now()
+                if (f !is Flow.Next) throw FlowSignal(f)
+                state.lastChangeAt = host.now()
+            }
+            for (job in m.jobs) {
+                val trigger = job.steps.firstOrNull { it.type == StepType.WATCH && it.enabled } ?: continue
+                val conds = trigger.conditions.filter { it.enabled }
+                if (conds.isEmpty()) continue
+                val last = state.firedAt[job.id]
+                if (last != null && host.now() - last < WATCH_COOLDOWN_MS) continue
+                val key = "job:" + job.id
+                if (key in state.active) continue
+                if (!conditionsHold(trigger, conds, state)) continue
+                state.firedAt[job.id] = host.now()
+                state.active.add(key)
+                val f = try { runList(m.name, job.steps, "job ${job.name}", state) } finally { state.active.removeAt(state.active.lastIndex) }
+                state.firedAt[job.id] = host.now()
                 if (f !is Flow.Next) throw FlowSignal(f)
                 state.lastChangeAt = host.now()
             }

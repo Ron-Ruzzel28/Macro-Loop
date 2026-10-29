@@ -429,9 +429,12 @@ object LogicTest {
             setup = { it.images["p"] = false }, rounds = 1,
             m = scanned(step("a") { it.copy(conditions = listOf(pic)) }, step("b")))
 
-        scanCheck("Scan: it loops the list until the picture shows up, then does the step", listOf("a"),
+        val afterWorked = Condition(kind = ConditionKind.ACTION_RESULT, resultOk = true)
+
+        scanCheck("Scan: it loops the list until the picture shows up, then does the step, then a Stop ends it", listOf("a"), rounds = 0,
             setup = { it.imageFlipAt["p"] = 600 },
-            m = scanned(step("a") { it.copy(conditions = listOf(pic)) }))
+            endOk = { it != null && it.contains("Stop step") },
+            m = scanned(step("a") { it.copy(conditions = listOf(pic)) }, step("s", StepType.STOP_MACRO) { it.copy(conditions = listOf(afterWorked)) }))
 
         scanCheck("Scan: a picture that is there is done at once, without waiting", listOf("a", "b"),
             setup = { it.images["p"] = true },
@@ -444,9 +447,54 @@ object LogicTest {
         scanCheck("Scan: a passing round counts only when something was done (repeat 2)", listOf("a", "b", "a", "b"), rounds = 2,
             m = scanned(step("a"), step("b")))
 
-        scanCheck("Scan: a test from a step looks again until its picture shows up, like a real run", listOf("a"),
-            setup = { it.imageFlipAt["p"] = 600 }, start = { m -> listOf(m.steps[0]) },
+        scanCheck("Scan: a test from a step looks again until its picture shows up, like a real run", listOf("a"), rounds = 0,
+            setup = { it.imageFlipAt["p"] = 600 }, start = { m -> m.steps },
+            endOk = { it != null && it.contains("Stop step") },
+            m = scanned(step("a") { it.copy(conditions = listOf(pic)) }, step("s", StepType.STOP_MACRO) { it.copy(conditions = listOf(afterWorked)) }))
+
+        scanCheck("Loops count every trip, even one where nothing was found (3 loops)", emptyList(), rounds = 3,
+            setup = { it.images["p"] = false },
             m = scanned(step("a") { it.copy(conditions = listOf(pic)) }))
+
+        // ---- jobs
+        fun jobStep(name: String, jobId: String) = step(name, StepType.RUN_JOB) { it.copy(targetId = jobId) }
+        val j1 = Job("j1", "Fallback", listOf(step("x1"), step("x2")))
+
+        scanCheck("A Run job step runs the whole job, then the caller carries on", listOf("a", "x1", "x2", "b"),
+            m = scanned(step("a"), jobStep("r", "j1"), step("b")).copy(jobs = listOf(j1)))
+
+        scanCheck("If true can run a job", listOf("a", "x1", "x2", "b"),
+            m = scanned(step("a") { it.copy(onSuccess = listOf(jobStep("r", "j1"))) }, step("b")).copy(jobs = listOf(j1)))
+
+        scanCheck("If false can run a job (the fallback)", listOf("x1", "x2"),
+            setup = { it.images["p"] = false },
+            m = scanned(step("a") { it.copy(conditions = listOf(pic), onFail = listOf(jobStep("r", "j1"))) }).copy(jobs = listOf(j1)))
+
+        scanCheck("A job that was deleted is skipped, and the macro goes on", listOf("a", "b"),
+            m = scanned(step("a"), jobStep("r", "gone"), step("b")))
+
+        scanCheck("A job that runs itself stops the macro with a clear message", listOf("y"),
+            endOk = { it != null && it.contains("runs itself") },
+            m = scanned(jobStep("r", "loop")).copy(jobs = listOf(Job("loop", "Loop", listOf(step("y"), jobStep("again", "loop"))))))
+
+        scanCheck("A Stop inside a job ends the whole macro", listOf("x1"),
+            endOk = { it != null && it.contains("Stop step") },
+            m = scanned(jobStep("r", "j2"), step("b")).copy(jobs = listOf(Job("j2", "Ender", listOf(step("x1"), step("s", StepType.STOP_MACRO))))))
+
+        scanCheck("A job can have a condition on the Run job step", listOf("b"),
+            setup = { it.images["p"] = false },
+            m = scanned(jobStep("r", "j1").copy(conditions = listOf(pic)), step("b")).copy(jobs = listOf(j1)))
+
+        // ---- jobs that run by themselves
+        val popupJob = Job("pj", "Close popup", listOf(step("t", StepType.WATCH) { it.copy(conditions = listOf(Condition(label = "popup"))) }, step("close")))
+        run {
+            val h = Host()
+            h.images["popup"] = true
+            h.imageFlipAt["p"] = 4000
+            val m = Macro("m", "t", listOf(step("a") { it.copy(conditions = listOf(Condition(label = "p")), timeoutMs = 10_000) }), scan = false, jobs = listOf(popupJob))
+            val end = FlowEngine(h).run(m, null, 1)
+            cases += Case("A job with its own condition runs by itself while a step waits", h.ran.contains("close") && h.ran.last() == "a" && end == null, "ran ${h.ran}, ended ${end ?: "normally"}")
+        }
 
         scanCheck("Scan: repeat 3 goes round three times that did something", listOf("a", "a", "a"), rounds = 3,
             m = scanned(step("a")))

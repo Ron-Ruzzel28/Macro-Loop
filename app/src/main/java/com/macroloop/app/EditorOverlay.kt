@@ -66,18 +66,40 @@ class EditorOverlay(
     private var stuckSec = macro.stuckSec
     private var schedule = macro.schedule
     private var scan = macro.scan
-    private var section = 0          // which list the panel shows: 0 = Main Job, 1 = Watchers, 2 = Stuck rescue
+    private var jobs: List<Job> = macro.jobs
+    private var section = 0          // which list the panel shows: 0 = Main Job, 1 = Watchers, 2 = Stuck rescue, 3 and up = the jobs
 
     /** The list being edited right now. */
     private var root: List<Step>
-        get() = when (section) { 0 -> mainSteps; 1 -> watchers; else -> stuck }
-        set(v) { when (section) { 0 -> mainSteps = v; 1 -> watchers = v; else -> stuck = v } }
+        get() = when {
+            section == 0 -> mainSteps
+            section == 1 -> watchers
+            section == 2 -> stuck
+            else -> jobs.getOrNull(section - 3)?.steps ?: emptyList()
+        }
+        set(v) {
+            when {
+                section == 0 -> mainSteps = v
+                section == 1 -> watchers = v
+                section == 2 -> stuck = v
+                else -> jobs = jobs.mapIndexed { i, j -> if (i == section - 3) j.copy(steps = v) else j }
+            }
+        }
+
+    private fun sectionName(k: Int): String = when {
+        k == 0 -> "Main Job"
+        k == 1 -> "Watchers"
+        k == 2 -> "Stuck rescue"
+        else -> "Job: " + (jobs.getOrNull(k - 3)?.name ?: "?")
+    }
+
+    private fun jobName(id: String): String = jobs.firstOrNull { it.id == id }?.name ?: "BROKEN (the job was deleted)"
 
     private fun current(): Macro = base.copy(
-        steps = mainSteps, watchers = watchers, stuck = stuck, counters = counters, stuckSec = stuckSec, schedule = schedule, scan = scan, repeat = repeat,
+        steps = mainSteps, watchers = watchers, stuck = stuck, counters = counters, stuckSec = stuckSec, schedule = schedule, scan = scan, repeat = repeat, jobs = jobs,
     )
 
-    private fun everyStep(): List<Step> = flat(mainSteps) + flat(watchers) + flat(stuck)
+    private fun everyStep(): List<Step> = flat(mainSteps) + flat(watchers) + flat(stuck) + jobs.flatMap { flat(it.steps) }
 
     private fun later(f: () -> Unit) { android.os.Handler(android.os.Looper.getMainLooper()).post { f() } }
     private var dirty = false
@@ -115,7 +137,7 @@ class EditorOverlay(
             val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
             row.addView(textButton("DISCARD") { DraftStore.clear(macroId); closeMenu() })
             row.addView(textButton("BRING BACK") {
-                mainSteps = d.steps; watchers = d.watchers; stuck = d.stuck; counters = d.counters
+                mainSteps = d.steps; watchers = d.watchers; stuck = d.stuck; counters = d.counters; jobs = d.jobs; repeat = d.repeat
                 stuckSec = d.stuckSec; schedule = d.schedule; scan = d.scan
                 dirty = true
                 closeMenu()
@@ -429,6 +451,9 @@ class EditorOverlay(
             box.addView(checkBox("Human-like timing", prefs.getBoolean(MacroService.PREF_HUMAN, false)) { on ->
                 prefs.edit().putBoolean(MacroService.PREF_HUMAN, on).apply()
             }, lp(8))
+            box.addView(checkBox("Battery saver (scan slower, runs cooler)", prefs.getBoolean(MacroService.PREF_SAVER, false)) { on ->
+                prefs.edit().putBoolean(MacroService.PREF_SAVER, on).apply()
+            }, lp(4))
             box.addView(textButton("CLOSE") { closeMenu() }, lp(8))
         }
     }
@@ -500,7 +525,7 @@ class EditorOverlay(
             ellipsize = TextUtils.TruncateAt.END
         })
         val n = count(root)
-        val secName = listOf("Main Job", "Watchers", "Stuck rescue")[section]
+        val secName = sectionName(section)
         titleCol.addView(label("$secName ▾   " + (if (n == 1) "1 step" else "$n steps") + (if (dirty) "  (not saved)" else ""), 11f, TokenInts.primary))
         titleCol.isClickable = true
         titleCol.setOnClickListener { openMacroMenu() }
@@ -517,12 +542,19 @@ class EditorOverlay(
             2 -> body.addView(label(
                 (if (stuckSec > 0) "Stuck check is ON: if the screen does not change for $stuckSec s, these steps run. " else "Stuck check is OFF (turn it on from the title menu). ") +
                     "With no steps here, the macro stops with a message instead.", 12f, TokenInts.textMuted), lp(4))
+            else -> if (section >= 3) {
+                val auto = root.any { it.type == StepType.WATCH && it.enabled }
+                body.addView(label(
+                    "This job runs only when something calls it: a Run job step, an If true / If false, a watcher or the stuck rescue. Then the macro carries on after the caller." +
+                        (if (auto) " It also runs by itself whenever the condition on its top card holds." else ""),
+                    12f, TokenInts.textMuted), lp(4))
+            }
         }
         if (root.isEmpty()) {
             body.addView(label(when (section) {
                 1 -> "No watchers yet. Tap + to add one."
                 2 -> "No rescue steps. Tap + to add what should happen when the macro is stuck."
-                else -> "No steps yet. Tap + to add the first one."
+                else -> if (section >= 3) "This job is empty. Tap + to add its steps." else "No steps yet. Tap + to add the first one."
             }, 14f, TokenInts.textMuted), lp(16))
         } else {
             renderSteps(body, root, emptyList(), "")
@@ -598,6 +630,7 @@ class EditorOverlay(
     private fun stepTitle(s: Step): String = if (s.name.isNotBlank()) s.name else when (s.type) {
         StepType.CLICK_IMAGE -> "Click image"
         StepType.LINK -> "Run: " + linkName(s)
+        StepType.RUN_JOB -> "Run job: " + jobName(s.targetId)
         else -> s.describe()
     }
 
@@ -618,6 +651,7 @@ class EditorOverlay(
             }
             StepType.CLICK -> row.addView(label("Click (${s.x}, ${s.y})  [${sign(s.offsetX)}/${sign(s.offsetY)}]", 15f, TokenInts.text))
             StepType.LINK -> row.addView(label("Run: " + linkName(s), 15f, if (findStep(s.targetId) == null) TokenInts.danger else TokenInts.text))
+            StepType.RUN_JOB -> row.addView(label("Run job: " + jobName(s.targetId), 15f, if (jobs.none { it.id == s.targetId }) TokenInts.danger else TokenInts.text))
             else -> row.addView(label(s.describe(), 15f, TokenInts.text))
         }
         return row
@@ -648,6 +682,7 @@ class EditorOverlay(
             }
             StepType.GOTO -> parts.add("→ ${targetName(s)}")
             StepType.LINK -> parts.add("[link: runs it, then carries on]")
+            StepType.RUN_JOB -> parts.add("[runs the whole job, then carries on]")
             StepType.TOAST -> parts.add("\"${s.text.ifBlank { "..." }}\"")
             StepType.OPEN_APP -> parts.add(appLabel(s.text))
             StepType.WAIT, StepType.STOP_MACRO -> Unit
@@ -670,6 +705,7 @@ class EditorOverlay(
         StepType.STOP_MACRO -> "■"
         StepType.GOTO -> "→"
         StepType.LINK -> "↪"
+        StepType.RUN_JOB -> "▤"
         StepType.TOAST -> "✎"
         StepType.OPEN_APP -> "▶"
         StepType.COUNTER_ADD -> "+"
@@ -1155,6 +1191,7 @@ class EditorOverlay(
                 Triple(Icon.CLOSE, "Stop Macro", pick(StepType.STOP_MACRO)),
                 Triple(Icon.REDO, "Go to Step", pick(StepType.GOTO)),
                 Triple(Icon.LINK, "Run Step (link)", pick(StepType.LINK)),
+                Triple(Icon.LIST, "Run Job", pick(StepType.RUN_JOB)),
             ),
         )
         box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.8).toInt(), capH(topY(dp(70)), dp(100)))).apply { addView(body) })
@@ -1208,6 +1245,7 @@ class EditorOverlay(
             StepType.OPEN_APP -> openAppPicker { pkg -> finishAdd(target, Step(StepType.OPEN_APP, text = pkg)) }
             StepType.GOTO -> openLinkPicker { t -> finishAdd(target, Step(StepType.GOTO, targetId = t.id)) }
             StepType.LINK -> openStepPicker("Run Step", null) { t -> finishAdd(target, Step(StepType.LINK, targetId = t.id)); askLinkedOnly(t) }
+            StepType.RUN_JOB -> pickJob("Run which job?") { id -> finishAdd(target, Step(StepType.RUN_JOB, targetId = id)) }
             StepType.COUNTER_ADD -> pickCounter("Add to which counter?") { name ->
                 var f: EditText? = null
                 showForm("Add to $name", "How much to add each time. A minus number takes away.", { b -> f = field(b, "Amount", "1", signed = true) },
@@ -1339,6 +1377,11 @@ class EditorOverlay(
             StepType.OPEN_APP -> add("Change App", Icon.PENCIL) {
                 closeMenu()
                 openAppPicker { pkg -> edit(ref) { it.copy(text = pkg) }; refreshPanel() }
+            }
+            StepType.RUN_JOB -> {
+                add("Change Job", Icon.PENCIL) { closeMenu(); pickJob("Run which job?") { id -> edit(ref) { it.copy(targetId = id) }; refreshPanel() } }
+                val at = jobs.indexOfFirst { it.id == s.targetId }
+                if (at >= 0) add("Open Job", Icon.LIST) { closeMenu(); section = 3 + at; panelScrollY = 0; refreshPanel() }
             }
             StepType.LINK -> add("Change Link", Icon.LINK) {
                 closeMenu()
@@ -2014,6 +2057,28 @@ class EditorOverlay(
         sec(0, "Main Job")
         sec(1, "Watchers (${watchers.size})")
         sec(2, "Stuck rescue (${stuck.size})")
+        jobs.forEachIndexed { k, j -> sec(3 + k, "Job: ${j.name} (${j.steps.size})") }
+        rows.add(Row("Jobs"))
+        rows.add(Row("New job...", icon = Icon.PLUS) { newJob(switchTo = true) { } })
+        if (section >= 3 && jobs.getOrNull(section - 3) != null) {
+            val j = jobs[section - 3]
+            val auto = j.steps.any { it.type == StepType.WATCH }
+            rows.add(Row(if (auto) "Run only when called" else "Run by itself when...", icon = Icon.REDO) {
+                closeMenu()
+                if (auto) {
+                    jobs = jobs.mapIndexed { i, x -> if (i == section - 3) x.copy(steps = x.steps.filter { it.type != StepType.WATCH }) else x }
+                    dirty = true
+                    refreshPanel()
+                } else {
+                    modify(emptyList()) { it.add(0, Step(StepType.WATCH, name = "Run when...")) }
+                    refreshPanel()
+                    toast("Choose what the job should wait for. It runs whenever that is on screen.")
+                    openConditionPicker(Ref(emptyList(), 0))
+                }
+            })
+            rows.add(Row("Rename this job", icon = Icon.PENCIL) { renameJob(section - 3) })
+            rows.add(Row("Delete this job", TokenInts.danger, Icon.CLOSE) { deleteJob(section - 3) })
+        }
         rows.add(Row("Settings"))
         rows.add(Row("Loop: " + (if (repeat <= 0) "forever" else "$repeat time${if (repeat == 1) "" else "s"}"), icon = Icon.REDO) { loopDialog() })
         rows.add(Row("Stop when it sees...", icon = Icon.CLOSE) { addStopWhen() })
@@ -2059,6 +2124,74 @@ class EditorOverlay(
         openConditionPicker(Ref(emptyList(), watchers.size - 1))
     }
 
+    // ---------------------------------------------------------------- jobs
+
+    private fun newJob(switchTo: Boolean, onDone: (Job) -> Unit) {
+        var name: EditText? = null
+        showForm("New job", "A job is a named folder of steps, for example Fallback. It runs only when a Run job step, an If true / If false, a watcher or the stuck rescue calls it.", { b ->
+            name = field(b, "Name", "", text = true)
+        }, {
+            val n = name?.text.toString().trim().take(24)
+            when {
+                n.isEmpty() -> toast("A job needs a name.")
+                jobs.any { it.name.equals(n, ignoreCase = true) } -> toast("There is already a job named $n.")
+                else -> {
+                    val job = Job(name = n)
+                    jobs = jobs + job
+                    dirty = true
+                    if (switchTo) { section = 3 + jobs.size - 1; panelScrollY = 0 }
+                    later { onDone(job) }
+                }
+            }
+        })
+    }
+
+    /** Pick one of the macro's jobs, or make a new one. */
+    private fun pickJob(title: String, onPick: (String) -> Unit) {
+        val rows = ArrayList<Row>()
+        if (jobs.isEmpty()) rows.add(Row("There are no jobs yet. Make one:"))
+        jobs.forEach { j -> rows.add(Row(j.name, icon = Icon.LIST, help = false) { closeMenu(); onPick(j.id) }) }
+        rows.add(Row("New job...", icon = Icon.PLUS) { newJob(switchTo = false) { onPick(it.id) } })
+        showMenu(title, rows)
+    }
+
+    private fun renameJob(k: Int) {
+        val j = jobs.getOrNull(k) ?: return
+        var name: EditText? = null
+        showForm("Rename job", null, { b -> name = field(b, "Name", j.name, text = true) }, {
+            val n = name?.text.toString().trim().take(24)
+            if (n.isNotEmpty() && jobs.none { it !== j && it.name.equals(n, ignoreCase = true) }) {
+                jobs = jobs.mapIndexed { i, x -> if (i == k) x.copy(name = n) else x }
+                dirty = true
+            }
+        })
+    }
+
+    private fun deleteJob(k: Int) {
+        val j = jobs.getOrNull(k) ?: return
+        val uses = everyStep().count { it.type == StepType.RUN_JOB && it.targetId == j.id }
+        fun doIt() {
+            closeMenu()
+            jobs = jobs.filterIndexed { i, _ -> i != k }
+            section = 0
+            panelScrollY = 0
+            dirty = true
+            refreshPanel()
+        }
+        if (uses == 0 && j.steps.isEmpty()) { doIt(); return }
+        closeMenu()
+        showDialogBox("Delete job \"${j.name}\"?") { box ->
+            box.addView(label(
+                "It has ${j.steps.size} step${if (j.steps.size == 1) "" else "s"}" +
+                    (if (uses > 0) " and $uses Run job step${if (uses == 1) "" else "s"} point to it. Those will show as BROKEN and be skipped." else "."),
+                14f, TokenInts.textMuted), lp(8))
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
+            row.addView(textButton("CANCEL") { closeMenu() })
+            row.addView(textButton("DELETE") { doIt() })
+            box.addView(row, lp(10))
+        }
+    }
+
     private fun addWatcher() {
         val n = watchers.size + 1
         modify(emptyList()) { it.add(Step(StepType.WATCH, name = "Watcher $n")) }
@@ -2069,11 +2202,13 @@ class EditorOverlay(
     private fun openWatchMenu(ref: Ref, s: Step) {
         val rows = ArrayList<Row>()
         rows.add(Row("Add Condition", icon = Icon.PLUS) { openConditionPicker(ref) })
-        rows.add(Row("Add step if true", TokenInts.success, Icon.PLUS) { openActionPicker(Target(ref.path + (ref.index to true))) })
-        rows.add(Row("Link a step if true", TokenInts.success, Icon.LINK) {
-            closeMenu()
-            openStepPicker("Run Step if true", s.id) { t -> addLinkTo(Target(ref.path + (ref.index to true)), t) }
-        })
+        if (section < 3) {
+            rows.add(Row("Add step if true", TokenInts.success, Icon.PLUS) { openActionPicker(Target(ref.path + (ref.index to true))) })
+            rows.add(Row("Link a step if true", TokenInts.success, Icon.LINK) {
+                closeMenu()
+                openStepPicker("Run Step if true", s.id) { t -> addLinkTo(Target(ref.path + (ref.index to true)), t) }
+            })
+        }
         rows.add(Row("Rename", icon = Icon.PENCIL) { renameDialog(ref) })
         rows.add(Row("Duplicate", icon = Icon.COPY) {
             closeMenu()

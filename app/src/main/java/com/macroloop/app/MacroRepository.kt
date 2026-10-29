@@ -20,6 +20,14 @@ object MacroRepository {
         appContext = context.applicationContext
         file = File(context.filesDir, "macros.json")
         load()
+        // One time: macros made before looping was the default had Repeat 1 and would end after one trip. They now loop until stopped.
+        val marker = File(context.filesDir, "migrated_loop_v1")
+        if (!marker.exists()) {
+            var changed = false
+            for (i in macros.indices) if (macros[i].repeat == 1) { macros[i] = macros[i].copy(repeat = 0); changed = true }
+            if (changed) persist()
+            runCatching { marker.writeText("1") }
+        }
     }
 
     fun get(id: String): Macro? = macros.firstOrNull { it.id == id }

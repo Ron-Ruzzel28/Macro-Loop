@@ -263,7 +263,7 @@ class CaptureService : Service() {
             if (convertScheduled) return
             convertScheduled = true
         }
-        val gap = if (fast) 60L else 500L
+        val gap = if (fast) 33L else 500L
         val wait = (gap - (SystemClock.elapsedRealtime() - lastFrameAt)).coerceAtLeast(0L)
         handler.postDelayed({ convertPending() }, wait)
     }

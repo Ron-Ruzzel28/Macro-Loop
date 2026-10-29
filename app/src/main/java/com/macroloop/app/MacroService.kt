@@ -50,6 +50,7 @@ class MacroService : AccessibilityService() {
         const val PREF_SHOW_DETECT = "show_detect"
         const val PREF_HIGHLIGHT = "highlight_success"
         const val PREF_SHOW_TAPS = "show_taps"
+        const val PREF_SAVER = "scan_saver"
         private const val DEFAULT_HOLD_MS = 60L
         private const val HOLD_SEGMENT_MS = 350L
         private const val FINGER_GAP_PX = 170
@@ -221,7 +222,8 @@ class MacroService : AccessibilityService() {
                 return "A watcher has no condition yet. Edit the macro, open Watchers and add one."
             }
         }
-        for (s in all) {
+        // In Scan mode a missing picture is skipped (and said in the run log) instead of stopping the macro.
+        for (s in if (macro.scan) emptyList() else all) {
             if (s.enabled && s.type == StepType.CLICK_IMAGE && TemplateStore.load(s.templateId) == null) {
                 return "A picture step has no picture yet. Edit the macro and capture it."
             }
@@ -321,8 +323,9 @@ class MacroService : AccessibilityService() {
                 // so the first tap does not land on a window that is still there.
                 delay(START_SETTLE_MS)
                 host = RunHost(macro.name, macro.scan)
-                val end = FlowEngine(host!!).run(macro, startList, rounds)
-                result = end ?: "Finished: ${macro.name}"
+                val engine = FlowEngine(host!!)
+                val end = engine.run(macro, startList, rounds)
+                result = end ?: "Finished: ${macro.name} (${engine.roundsDone} loop${if (engine.roundsDone == 1) "" else "s"})"
                 finish(result!!)
             } catch (e: CancellationException) {
                 throw e
@@ -332,8 +335,9 @@ class MacroService : AccessibilityService() {
                 capDog?.cancel()
                 capture?.fast = false
                 if (logged) {
-                    val text = result ?: "Stopped by you."
-                    val problem = text.startsWith("Stopped:") && !text.startsWith("Stopped by a Stop step")
+                    val skipped = host?.problems?.toList().orEmpty()
+                    val text = (result ?: "Stopped by you.") + if (skipped.isEmpty()) "" else " Some steps were skipped because of setup problems: " + skipped.joinToString("; ") + "."
+                    val problem = (text.startsWith("Stopped:") && !text.startsWith("Stopped by a Stop step")) || skipped.isNotEmpty()
                     RunLog.add(macro.name, text, problem, ((SystemClock.elapsedRealtime() - startedAt) / 1000).toInt(), if (problem) CaptureService.grab() else null, host?.logText().orEmpty())
                 }
                 onFinished?.invoke()
@@ -396,6 +400,25 @@ class MacroService : AccessibilityService() {
 
         private var lastText = ""
 
+        /** Setup problems met while the macro ran (a picture that is too plain, a step with no picture). Skipped, and said at the end. */
+        val problems = LinkedHashSet<String>()
+
+        private val saver = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_SAVER, false)
+
+        /** Results of looks at the current screen picture. A new picture clears them; the same picture is never looked at twice. */
+        private val findCache = HashMap<String, Matcher.Result>()
+        private val readCache = HashMap<String, String>()
+
+        /** A trip through the list found nothing to do: wait for the screen to change (a moment at most), no fixed pause. */
+        override suspend fun idle() {
+            if (CaptureService.instance == null) {
+                delay(if (saver) 150 else 20)
+                return
+            }
+            CaptureService.waitFrame(cachedAt + 1, if (saver) 150 else 60)
+            if (saver) delay(80)
+        }
+
         override fun note(text: String) {
             val secs = (SystemClock.elapsedRealtime() - t0) / 1000
             val at = "%d:%02d".format(secs / 60, secs % 60)
@@ -454,6 +477,8 @@ class MacroService : AccessibilityService() {
             val f = CaptureService.grab() ?: return null
             cachedFrame = f
             cachedAt = at
+            findCache.clear()
+            readCache.clear()
             return f
         }
 
@@ -527,7 +552,8 @@ class MacroService : AccessibilityService() {
             val scale = if (c.capW > 0) frame.width.toDouble() / c.capW else 1.0
             val region = if (c.wholeScreen) null
             else Matcher.nearRegion(c.boxX, c.boxY, c.boxW, c.boxH, scale, frame.width, frame.height)
-            val r = withContext(Dispatchers.Default) { Matcher.find(frame, t, region, c.threshold, scale) }
+            val key = "${c.templateId}|${region?.flattenToString()}|${c.threshold}|$scale"
+            val r = findCache[key] ?: withContext(Dispatchers.Default) { Matcher.find(frame, t, region, c.threshold, scale) }.also { findCache[key] = it }
             DebugState.record(frame, r, c.threshold, c.label)
             val holds = r.found == c.mustAppear
             val note = if (c.mustAppear) "\"${c.label}\" was not on screen (best ${(r.score * 100).toInt()}%)"
@@ -551,7 +577,8 @@ class MacroService : AccessibilityService() {
                 val present = withContext(Dispatchers.Default) { ScreenCheck.colorPresent(frame, r, c.color, c.tolerance, c.wholeScreen || c.boxW <= 0) }
                 return ImageCheck(present == c.mustAppear, if (c.mustAppear) "$name (${ScreenCheck.hex(c.color)}) was not on screen" else "$name (${ScreenCheck.hex(c.color)}) was still on screen")
             }
-            val read = withContext(Dispatchers.Default) { ScreenCheck.readText(frame, r) }
+            val readKey = r.flattenToString()
+            val read = readCache[readKey] ?: withContext(Dispatchers.Default) { ScreenCheck.readText(frame, r) }.also { readCache[readKey] = it }
             val found = ScreenCheck.textMatches(read, c.text)
             return ImageCheck(found == c.mustAppear, if (c.mustAppear) "the words $name were not on screen" else "the words $name were still on screen")
         }
@@ -648,7 +675,10 @@ class MacroService : AccessibilityService() {
         /** Looks for the picture until it is found and steady, or until the time is up. */
         private suspend fun runPictureStep(where: String, step: Step): Outcome {
             val t = template(step.templateId)
-                ?: return Outcome.Fatal("Stopped: step $where has no picture yet. Edit the macro and capture it.")
+                ?: return if (scan) {
+                    problems.add("step $where has no picture")
+                    Outcome.Missing("step $where has no picture yet. Edit the macro and capture it.")
+                } else Outcome.Fatal("Stopped: step $where has no picture yet. Edit the macro and capture it.")
             val startedAt = SystemClock.elapsedRealtime()
             var bestScore = 0.0
             var rejectedPart = -1.0
@@ -667,11 +697,18 @@ class MacroService : AccessibilityService() {
                     else Matcher.nearRegion(step.boxX, step.boxY, step.boxW, step.boxH, scale, frame.width, frame.height)
                     val hits: List<Matcher.Result> = withContext(Dispatchers.Default) {
                         if (step.matchAll) Matcher.findAll(frame, t, region, step.threshold, scale)
-                        else listOf(Matcher.find(frame, t, region, step.threshold, scale, step.flexScale))
+                        else {
+                            val key = "p|${step.templateId}|${region?.flattenToString()}|${step.threshold}|$scale|${step.flexScale}"
+                            listOf(findCache[key] ?: Matcher.find(frame, t, region, step.threshold, scale, step.flexScale).also { findCache[key] = it })
+                        }
                     }
                     val res = hits.firstOrNull() ?: Matcher.Result(false, 0.0, 0, 0, 0, 0)
                     DebugState.record(frame, res, step.threshold, step.label, hits.drop(1))
                     if (res.tooPlain) {
+                        if (scan) {
+                            problems.add("the picture in step $where is too plain")
+                            return Outcome.Missing("the picture in step $where is too plain to find. Pick a bigger area with more detail.")
+                        }
                         return Outcome.Fatal("Stopped: the picture in step $where is too plain to find. Pick a bigger area with more detail.")
                     }
                     bestScore = maxOf(bestScore, res.score)

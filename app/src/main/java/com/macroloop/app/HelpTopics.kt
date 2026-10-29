@@ -142,6 +142,13 @@ object HelpTopics {
         t("sec_watchers", "Watchers", "Things the macro watches for all the time, like a popup. When one shows up, its steps run, then the macro carries on.", "If the \"X\" of an ad shows up, tap it.",
             "Use a watcher for popups, instead of adding extra steps everywhere.", "A watcher with no condition does nothing.")
         t("sec_stuck", "Stuck rescue", "Steps that run when the screen has been frozen for a while (set in Stuck check).", "Press Back, then open the game again.", "With no steps here, the macro just stops with a message.")
+        t("jobs", "Jobs", "A job is a named folder of steps, such as Fallback. The Main Job loops. Other jobs sit idle until something calls them, then the macro carries on after the caller.",
+            "A job 'Close popups' holds three steps. A Run job step, an If false, or a watcher calls it when needed.",
+            "Use jobs for the parts you reuse or the fallbacks, so the Main Job stays short.", "A job that calls itself. The macro stops with a message.")
+        t("run_job", "Run Job", "Runs a whole job, then the macro carries on after this step. It can have conditions and If true / If false like any step.",
+            "If the Claim picture is not found, run the job Fallback.", "Put it under If false to make a fallback.", "Deleting the job later. The step shows BROKEN and is skipped.")
+        t("job_auto", "Run by itself when...", "Makes the job run on its own whenever a picture, colour, words or counter is seen, even when no step calls it.",
+            "A job 'Close popup' that runs whenever the popup's X is on screen.", "The top card of the job holds the condition. Use Run only when called to turn it off.", "A condition that is always true. The job then runs again and again.")
         t("loop", "Loop", "How many times the whole list of steps goes round: forever (until you stop it) or a number of times.",
             "Forever, with 'Stop when it sees' a picture: it keeps going round until that picture shows up.",
             "New macros loop forever. Press the red Stop button to end any run.", "Forever with nothing to stop it. You then have to press Stop.")
@@ -179,7 +186,7 @@ object HelpTopics {
         "toast message" to "toast", "press back" to "press_back", "press home" to "press_home", "open recent" to "open_recent",
         "open notification" to "open_notification", "open quicksetting" to "open_quicksetting", "lock screen" to "lock_screen",
         "add to counter" to "counter_add", "reset counter" to "counter_reset", "stop macro" to "stop", "go to step" to "goto",
-        "run step (link)" to "link", "paste" to "paste",
+        "run step (link)" to "link", "run job" to "run_job", "paste" to "paste",
         "image appears" to "cond_image_appear", "image not appear" to "cond_image_not", "colour appears" to "cond_color_appear",
         "colour not appear" to "cond_color_not", "colour changes" to "cond_color_changes", "text appears" to "cond_text_appear",
         "text not appear" to "cond_text_not", "action result" to "cond_action_result", "random true" to "cond_random", "once true" to "cond_once",
@@ -205,6 +212,8 @@ object HelpTopics {
         "change to success" to "cond_action_result", "change to failed" to "cond_action_result",
         "watchers" to "sec_watchers", "stuck rescue" to "sec_stuck", "counters" to "counters", "stuck check" to "stuck_check",
         "schedule" to "schedule", "help topics" to "help_topics", "scan mode" to "scan_mode", "loop:" to "loop", "stop when" to "stop_when",
+        "job:" to "jobs", "new job" to "jobs", "rename this job" to "jobs", "delete this job" to "jobs", "run by itself" to "job_auto", "run only when called" to "job_auto",
+        "change job" to "run_job", "open job" to "jobs",
     )
 
     /** The help for a menu row or a button, found by its words. Null when there is nothing to say. */
@@ -222,6 +231,7 @@ object HelpTopics {
         StepType.OPEN_QUICKSETTING -> "open_quicksetting"; StepType.LOCK_SCREEN -> "lock_screen"; StepType.TOAST -> "toast"
         StepType.OPEN_APP -> "open_app"; StepType.COUNTER_ADD -> "counter_add"; StepType.COUNTER_RESET -> "counter_reset"
         StepType.WATCH -> "sec_watchers"
+        StepType.RUN_JOB -> "run_job"
     })
 
     fun forCondition(c: Condition): Topic? = byId(when (c.kind) {

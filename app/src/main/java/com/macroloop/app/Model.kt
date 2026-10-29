@@ -8,6 +8,7 @@ enum class StepType {
     PRESS_BACK, PRESS_HOME, OPEN_RECENT, OPEN_NOTIFICATION, OPEN_QUICKSETTING, LOCK_SCREEN,
     TOAST, OPEN_APP,
     COUNTER_ADD, COUNTER_RESET,
+    RUN_JOB,        // runs a whole job (a named folder of steps), then carries on after it. [targetId] is the job's id
     WATCH,          // a watcher: its conditions are looked at all the time, and its If true steps run when they hold
 }
 
@@ -148,6 +149,7 @@ data class Step(
         StepType.COUNTER_ADD -> "Add $amount to counter ${text.ifBlank { "?" }}"
         StepType.COUNTER_RESET -> "Reset counter ${text.ifBlank { "?" }}"
         StepType.WATCH -> "Watcher"
+        StepType.RUN_JOB -> "Run job"
     }
 
     /** True for steps that tap or swipe somewhere (they have click style, offset and delay). */
@@ -239,6 +241,23 @@ data class Step(
     }
 }
 
+/**
+ * A named folder of steps that runs only when something calls it: a Run Job step, an If true / If false branch,
+ * a watcher or the stuck rescue. A job that has a WATCH step inside it also runs by itself whenever that step's
+ * conditions hold.
+ */
+data class Job(val id: String = java.util.UUID.randomUUID().toString(), val name: String, val steps: List<Step> = emptyList()) {
+    fun toJson(): JSONObject = JSONObject().put("id", id).put("name", name)
+        .put("steps", JSONArray().also { a -> steps.forEach { a.put(it.toJson()) } })
+
+    companion object {
+        fun fromJson(o: JSONObject): Job {
+            val a = o.optJSONArray("steps") ?: JSONArray()
+            return Job(o.optString("id", java.util.UUID.randomUUID().toString()), o.optString("name", "Job"), List(a.length()) { Step.fromJson(a.getJSONObject(it)) })
+        }
+    }
+}
+
 /** True when the macro looks at the screen anywhere (a picture, colour or words, a watcher or the stuck check). */
 fun macroNeedsCapture(m: Macro): Boolean {
     fun walk(l: List<Step>): Boolean = l.any { s ->
@@ -292,10 +311,11 @@ data class Macro(
     val stuckSec: Int = 0,                    // 0 = off. The screen not changing for this long counts as stuck
     val stuck: List<Step> = emptyList(),      // what to do when stuck; empty = stop the macro with a message
     val schedule: Schedule = Schedule(),
+    val jobs: List<Job> = emptyList(),        // extra jobs besides the Main Job
     val scan: Boolean = true,                 // Scan mode: a picture is looked at once and the step is skipped if it is not there; the list loops
 ) {
     /** Every list of steps in the macro: the main job, the watchers and the stuck rescue. */
-    val lists: List<List<Step>> get() = listOf(steps, watchers, stuck)
+    val lists: List<List<Step>> get() = listOf(steps, watchers, stuck) + jobs.map { it.steps }
 
     fun summary(): String {
         val s = if (steps.size == 1) "1 step" else "${steps.size} steps"
@@ -315,6 +335,7 @@ data class Macro(
         .put("landscape", landscape)
         .put("stuckSec", stuckSec)
         .put("scan", scan)
+        .put("jobs", JSONArray().also { a -> jobs.forEach { a.put(it.toJson()) } })
         .put("schedule", schedule.toJson())
         .put("counters", JSONArray().also { a -> counters.forEach { a.put(JSONObject().put("name", it.name).put("keep", it.keep)) } })
         .put("watchers", JSONArray().also { a -> watchers.forEach { a.put(it.toJson()) } })
@@ -336,6 +357,7 @@ data class Macro(
                 landscape = o.optBoolean("landscape", false),
                 stuckSec = o.optInt("stuckSec", 0),
                 scan = o.optBoolean("scan", true),
+                jobs = o.optJSONArray("jobs")?.let { j -> List(j.length()) { Job.fromJson(j.getJSONObject(it)) } } ?: emptyList(),
                 schedule = Schedule.fromJson(o.optJSONObject("schedule")),
                 counters = o.optJSONArray("counters")?.let { c -> List(c.length()) { CounterDef(c.getJSONObject(it).getString("name"), c.getJSONObject(it).optBoolean("keep", false)) } } ?: emptyList(),
                 watchers = o.optJSONArray("watchers")?.let { w -> List(w.length()) { Step.fromJson(w.getJSONObject(it)) } } ?: emptyList(),
