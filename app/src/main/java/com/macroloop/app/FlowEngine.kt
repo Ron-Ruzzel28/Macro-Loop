@@ -285,6 +285,18 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
         }
         if (step.delayMs > 0) waitWatching(step.delayMs, state)
 
+        // "Skip" conditions: when one holds, this step is left out and the macro goes on with the next one.
+        val skippers = step.conditions.filter { it.enabled && it.skipWhen && (it.kind == ConditionKind.IMAGE || it.kind == ConditionKind.COLOR || it.kind == ConditionKind.TEXT) }
+        if (skippers.isNotEmpty()) {
+            host.resetBaselines()
+            for (c in skippers) {
+                if (host.imageHolds(c).holds) {
+                    host.note("step $where skipped: ${c.label.ifBlank { "a skip condition" }} was true")
+                    return StepResult(Flow.Next, prevOk)
+                }
+            }
+        }
+
         var outcome: Outcome = Outcome.Ok
         if (step.conditions.isNotEmpty()) outcome = waitConditions(step, where, prevOk, state)
         if (outcome is Outcome.Ok && step.type == StepType.STOP_MACRO) return StepResult(Flow.Stop("Stopped by a Stop step ($where)."), true)
@@ -419,7 +431,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
 
     /** Waits until the step's conditions hold. Only picture conditions can change while waiting. */
     private suspend fun waitConditions(step: Step, where: String, prevOk: Boolean, state: RunState): Outcome {
-        val conds = step.conditions.filter { it.enabled }
+        val conds = step.conditions.filter { it.enabled && !it.skipWhen }
         if (conds.isEmpty()) return Outcome.Ok
         val rolls = conds.map { if (it.kind == ConditionKind.RANDOM) host.roll() else 0 }
         val hasImage = conds.any { it.kind == ConditionKind.IMAGE || it.kind == ConditionKind.COLOR || it.kind == ConditionKind.TEXT }

@@ -569,8 +569,8 @@ class MacroService : AccessibilityService() {
                 ?: return ImageCheck(false, "\"${c.label}\" could not be checked, the screen is not visible")
             val scale = if (c.capW > 0) frame.width.toDouble() / c.capW else 1.0
             val region = Matcher.regionFor(c.wholeScreen, c.exact, c.boxX, c.boxY, c.boxW, c.boxH, scale, frame.width, frame.height)
-            val key = "${c.templateId}|${region?.flattenToString()}|${c.threshold}|$scale"
-            val r = findCache[key] ?: withContext(Dispatchers.Default) { Matcher.find(frame, t, region, c.threshold, scale) }.also { findCache[key] = it }
+            val key = "${c.templateId}|${region?.flattenToString()}|${c.threshold}|$scale|${c.fine}"
+            val r = findCache[key] ?: withContext(Dispatchers.Default) { Matcher.find(frame, t, region, c.threshold, scale, fine = c.fine) }.also { findCache[key] = it }
             DebugState.record(frame, r, c.threshold, c.label)
             val holds = r.found == c.mustAppear
             val note = if (c.mustAppear) "\"${c.label}\" was not on screen (best ${(r.score * 100).toInt()}%)"
@@ -591,8 +591,12 @@ class MacroService : AccessibilityService() {
                     val changed = ScreenCheck.colorChanged(base, now, c.tolerance)
                     return ImageCheck(changed, "$name has not changed yet")
                 }
-                val present = withContext(Dispatchers.Default) { ScreenCheck.colorPresent(frame, r, c.color, c.tolerance, c.wholeScreen || c.boxW <= 0) }
-                return ImageCheck(present == c.mustAppear, if (c.mustAppear) "$name (${ScreenCheck.hex(c.color)}) was not on screen" else "$name (${ScreenCheck.hex(c.color)}) was still on screen")
+                val whole = c.wholeScreen || c.boxW <= 0
+                val share = withContext(Dispatchers.Default) { ScreenCheck.colorShare(frame, r, c.color, c.tolerance) }
+                val need = ScreenCheck.neededShare(c.minPct, whole)
+                val present = share >= need
+                val seen = "found ${ScreenCheck.pctText(share)}, needs ${ScreenCheck.pctText(need)}"
+                return ImageCheck(present == c.mustAppear, if (c.mustAppear) "$name (${ScreenCheck.hex(c.color)}) was not on screen ($seen)" else "$name (${ScreenCheck.hex(c.color)}) was still on screen ($seen)")
             }
             val readKey = r.flattenToString()
             val read = readCache[readKey] ?: withContext(Dispatchers.Default) { ScreenCheck.readText(frame, r) }.also { readCache[readKey] = it }
@@ -603,7 +607,9 @@ class MacroService : AccessibilityService() {
         /** The text for a toast when you press Test on a condition in the editor. */
         suspend fun describe(c: Condition): String {
             val r = imageHolds(c)
-            return if (r.holds) "Condition is true" else "Condition is false: ${r.note}"
+            return if (r.holds) {
+                "Condition is true" + (if (c.kind == ConditionKind.COLOR && !c.changes) " (" + r.note.substringAfterLast("(").trimEnd(')') + ")" else "")
+            } else "Condition is false: ${r.note}"
         }
 
         override suspend fun pause(ms: Long) = delay(ms)
@@ -723,8 +729,8 @@ class MacroService : AccessibilityService() {
                     val hits: List<Matcher.Result> = withContext(Dispatchers.Default) {
                         if (step.matchAll) Matcher.findAll(frame, t, region, step.threshold, scale)
                         else {
-                            val key = "p|${step.templateId}|${region?.flattenToString()}|${step.threshold}|$scale|${step.flexScale}"
-                            listOf(findCache[key] ?: Matcher.find(frame, t, region, step.threshold, scale, step.flexScale).also { findCache[key] = it })
+                            val key = "p|${step.templateId}|${region?.flattenToString()}|${step.threshold}|$scale|${step.flexScale}|${step.fine}"
+                            listOf(findCache[key] ?: Matcher.find(frame, t, region, step.threshold, scale, step.flexScale, step.fine).also { findCache[key] = it })
                         }
                     }
                     val res = hits.firstOrNull() ?: Matcher.Result(false, 0.0, 0, 0, 0, 0)

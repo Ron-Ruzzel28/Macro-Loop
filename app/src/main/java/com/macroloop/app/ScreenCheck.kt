@@ -56,24 +56,43 @@ object ScreenCheck {
         return (0xFF shl 24) or ((sr / n).toInt() shl 16) or ((sg / n).toInt() shl 8) or (sb / n).toInt()
     }
 
-    /** True when enough of the area is within the tolerance of the colour. A box needs more of its area than the whole screen. */
-    fun colorPresent(frame: Bitmap, r: Rect, color: Int, tolerancePct: Int, wholeScreen: Boolean): Boolean {
-        val need = if (wholeScreen) 0.004 else 0.30
-        var hit = 0; var n = 0
-        val stepX = maxOf(1, r.width() / 120)
-        val stepY = maxOf(1, r.height() / 120)
+    /** How much of the area must be the colour (a fraction). [minPct] 0 = the standard rule: 0.2% of the screen, or 5% of a box. */
+    fun neededShare(minPct: Double, wholeScreen: Boolean): Double =
+        if (minPct > 0.0) minPct / 100.0 else if (wholeScreen) 0.002 else 0.05
+
+    /** "0.2%" style text for a fraction. */
+    fun pctText(share: Double): String {
+        val p = share * 100.0
+        return if (p >= 10) "%.0f%%".format(p) else if (p >= 1) "%.1f%%".format(p) else "%.2f%%".format(p)
+    }
+
+    /**
+     * The share (0.0 to 1.0) of the area that is within the tolerance of the colour. Every pixel counts for small areas;
+     * big areas look at every 2nd or 3rd pixel, which still sees a spot 10 pixels wide.
+     */
+    fun colorShare(frame: Bitmap, r: Rect, color: Int, tolerancePct: Int): Double {
+        val w = r.width(); val h = r.height()
+        if (w <= 0 || h <= 0) return 0.0
+        val stride = maxOf(1, Math.ceil(Math.sqrt(w.toDouble() * h / 1_200_000.0)).toInt())
+        val row = IntArray(w)
+        var hit = 0L; var n = 0L
         var y = r.top
         while (y < r.bottom) {
-            var x = r.left
-            while (x < r.right) {
-                if (distancePct(frame.getPixel(x, y), color) <= tolerancePct) hit++
+            frame.getPixels(row, 0, w, r.left, y, w, 1)
+            var x = 0
+            while (x < w) {
+                if (distancePct(row[x], color) <= tolerancePct) hit++
                 n++
-                x += stepX
+                x += stride
             }
-            y += stepY
+            y += stride
         }
-        return n > 0 && hit.toDouble() / n >= need
+        return if (n == 0L) 0.0 else hit.toDouble() / n
     }
+
+    /** True when enough of the area is within the tolerance of the colour. */
+    fun colorPresent(frame: Bitmap, r: Rect, color: Int, tolerancePct: Int, wholeScreen: Boolean, minPct: Double = 0.0): Boolean =
+        colorShare(frame, r, color, tolerancePct) >= neededShare(minPct, wholeScreen)
 
     /** Reads the words in an area. Blocking: call it off the main thread. */
     fun readText(frame: Bitmap, r: Rect): String {
@@ -181,6 +200,14 @@ object ScreenCheck {
         boxCv.drawRect(60f + 4f, 60f + 4f, 220f - 4f, 160f - 4f, line)
         check("capture box still on screen is noticed", markerShows(withBox, Rect(60, 60, 220, 160)))
         check("clean screen has no capture box", !markerShows(bmp, Rect(60, 60, 220, 160)))
+        // a small coloured icon on a big screen (the case that used to be missed)
+        val big = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888)
+        big.eraseColor(0xFF202020.toInt())
+        android.graphics.Canvas(big).drawRect(500f, 1200f, 540f, 1240f, android.graphics.Paint().apply { color = red })
+        val bigAll = Rect(0, 0, 1080, 2400)
+        check("small icon found with a small amount (0.02%)", colorPresent(big, bigAll, red, 20, true, 0.02))
+        check("small icon not found when much is asked (2%)", !colorPresent(big, bigAll, red, 20, true, 2.0))
+        check("share of a 40x40 spot is about 0.06%", colorShare(big, bigAll, red, 20) in 0.0004..0.0008)
         out.add(0, "Screen checks: $passed of $total")
         return out
     }

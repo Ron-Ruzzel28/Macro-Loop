@@ -776,10 +776,35 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Spacer(Modifier.height(20.dp))
+                val locked = License.nameLocked(ctx)
                 OutlinedTextField(
                     value = name, onValueChange = { name = it.take(40); License.setName(ctx, name) },
-                    singleLine = true, label = { Text("Name shown to the owner") }, modifier = Modifier.fillMaxWidth(),
+                    singleLine = true, enabled = !locked,
+                    label = { Text(if (locked) "Name (set by the owner)" else "Name shown to the owner") }, modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(20.dp))
+                var claimText by remember { mutableStateOf("") }
+                var claimBusy by remember { mutableStateOf(false) }
+                val claimScope = androidx.compose.runtime.rememberCoroutineScope()
+                Text("Got a code from the owner?", fontSize = 13.sp, color = Tokens.textMuted)
+                OutlinedTextField(
+                    value = claimText, onValueChange = { claimText = it.uppercase().take(12) },
+                    singleLine = true, label = { Text("One-time code") }, modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(if (claimBusy) "Checking..." else "Use code", Modifier.fillMaxWidth()) {
+                    if (claimText.isBlank() || claimBusy) return@SecondaryButton
+                    claimBusy = true
+                    claimScope.launch {
+                        val err = License.claim(ctx, claimText)
+                        claimBusy = false
+                        if (err.isEmpty()) {
+                            claimText = ""
+                            name = License.name(ctx)
+                            Toast.makeText(ctx, "Code accepted. Your time was added.", Toast.LENGTH_LONG).show()
+                        } else Toast.makeText(ctx, err, Toast.LENGTH_LONG).show()
+                    }
+                }
                 Spacer(Modifier.height(16.dp))
                 Text("Last checked: ${License.lastCheckedText(ctx)}", fontSize = 13.sp, color = Tokens.textMuted)
                 if (License.offline) Text("No internet right now. TapLens keeps working for up to 24 hours after the last check.", fontSize = 13.sp, color = Tokens.warning, modifier = Modifier.padding(top = 2.dp))

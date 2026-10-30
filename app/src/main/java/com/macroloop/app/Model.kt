@@ -45,6 +45,9 @@ data class Condition(
     val tolerance: Int = 20,            // COLOR: how far a colour may be from it, in percent
     val changes: Boolean = false,       // COLOR: true when it is the area's colour changing that counts
     val text: String = "",              // TEXT: the words to look for
+    val minPct: Double = 0.0,           // COLOR: how much of the area must be the colour, in percent (0 = the standard rule)
+    val fine: Boolean = false,          // IMAGE: small details mode (full detail, colour matching)
+    val skipWhen: Boolean = false,      // true = when this holds the whole step is skipped (the next step runs)
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("kind", kind.name)
@@ -57,6 +60,7 @@ data class Condition(
         .put("resultOk", resultOk).put("percent", percent)
         .put("enabled", enabled).put("color", color).put("tolerance", tolerance)
         .put("changes", changes).put("text", text)
+        .put("minPct", minPct).put("fine", fine).put("skipWhen", skipWhen)
 
     companion object {
         fun fromJson(o: JSONObject) = Condition(
@@ -77,6 +81,9 @@ data class Condition(
             tolerance = o.optInt("tolerance", 20),
             changes = o.optBoolean("changes", false),
             text = o.optString("text", ""),
+            minPct = o.optDouble("minPct", 0.0),
+            fine = o.optBoolean("fine", false),
+            skipWhen = o.optBoolean("skipWhen", false),
         )
     }
 }
@@ -104,6 +111,7 @@ data class Step(
     val timeoutMs: Long = 10_000,
     val skipIfMissing: Boolean = false, // false = stop the macro when not found
     val flexScale: Boolean = false,     // also try slightly bigger and smaller copies of the picture
+    val fine: Boolean = false,          // small details mode (full detail, colour matching)
     val matchAll: Boolean = false,      // tap every match, top to bottom, not only the best
     val boxX: Int = 0,                  // where the picture box is, in screen pixels
     val boxY: Int = 0,
@@ -176,6 +184,7 @@ data class Step(
         .put("timeoutMs", timeoutMs)
         .put("skipIfMissing", skipIfMissing)
         .put("flexScale", flexScale)
+        .put("fine", fine)
         .put("matchAll", matchAll)
         .put("boxX", boxX).put("boxY", boxY).put("boxW", boxW).put("boxH", boxH)
         .put("capW", capW).put("capH", capH)
@@ -219,6 +228,7 @@ data class Step(
             timeoutMs = o.optLong("timeoutMs", 10_000),
             skipIfMissing = o.optBoolean("skipIfMissing", false),
             flexScale = o.optBoolean("flexScale", false),
+            fine = o.optBoolean("fine", false),
             matchAll = o.optBoolean("matchAll", false),
             boxX = o.optInt("boxX"), boxY = o.optInt("boxY"),
             boxW = o.optInt("boxW"), boxH = o.optInt("boxH"),

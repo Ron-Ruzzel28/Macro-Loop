@@ -115,9 +115,11 @@ object Matcher {
         thresholdPct: Int,
         scale: Double = 1.0,
         flexScale: Boolean = false,
+        fine: Boolean = false,
     ): Result {
         if (!ensureLoaded()) return Result(false, 0.0, 0, 0, 0, 0)
         val started = System.nanoTime()
+        if (fine) return findFine(frame, template, region, thresholdPct, scale).copy(ms = elapsedMs(started))
         val f = grayCached(frame)
         val base = gray(template)
         try {
@@ -197,6 +199,49 @@ object Matcher {
         } finally {
             t.release()
         }
+    }
+
+    /**
+     * Small details mode: looks at full detail (no half-size first look) and compares in colour, so a tiny icon
+     * that differs from its neighbours only by colour is found, and a thin or low-contrast shape is not given up on.
+     */
+    private fun findFine(frame: Bitmap, template: Bitmap, region: android.graphics.Rect?, thresholdPct: Int, scale: Double): Result {
+        val f = grayCached(frame)
+        var t = rgb(template)
+        var area: Mat? = null
+        try {
+            if (abs(scale - 1.0) > 0.02) t = resized(t, scale)
+            if (t.cols() < 4 || t.rows() < 4) return Result(false, 0.0, 0, 0, t.cols(), t.rows(), tooPlain = true)
+            val tg = Mat()
+            Imgproc.cvtColor(t, tg, Imgproc.COLOR_RGB2GRAY)
+            val plain = isVeryPlain(tg)
+            tg.release()
+            if (plain) return Result(false, 0.0, 0, 0, t.cols(), t.rows(), tooPlain = true)
+            val (rx, ry, rw, rh) = clampRegion(f, t, region)
+            area = rgb(frame).also { }
+            val sub = area.submat(Rect(rx, ry, rw, rh))
+            if (sub.cols() < t.cols() || sub.rows() < t.rows()) return Result(false, 0.0, 0, 0, t.cols(), t.rows())
+            val (loc, score) = match(sub, t)
+            return Result(score >= thresholdPct / 100.0, score, rx + loc.x.toInt(), ry + loc.y.toInt(), t.cols(), t.rows())
+        } finally {
+            t.release()
+            area?.release()
+        }
+    }
+
+    private fun rgb(bitmap: Bitmap): Mat {
+        val rgba = Mat()
+        Utils.bitmapToMat(bitmap, rgba)
+        val out = Mat()
+        Imgproc.cvtColor(rgba, out, Imgproc.COLOR_RGBA2RGB)
+        rgba.release()
+        return out
+    }
+
+    private fun isVeryPlain(tg: Mat): Boolean {
+        val std = MatOfDouble()
+        Core.meanStdDev(tg, MatOfDouble(), std)
+        return std.get(0, 0)[0] < 1.5
     }
 
     // ------------------------------------------------------------------ internals

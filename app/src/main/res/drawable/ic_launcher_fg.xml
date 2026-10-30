@@ -1,26 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- TapLens icon: a picture inside capture corners, with a tap cursor and ring on it. -->
+<!-- TapLens icon: a picture frame with mountains and sun, and a target on the corner. Full colour (no themed layer). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
+        android:fillColor="#15234A"
+        android:strokeColor="#8AB4FF"
+        android:strokeWidth="4"
+        android:strokeLineJoin="round"
+        android:pathData="M30,24 H72 a8,8 0 0 1 8,8 V64 a8,8 0 0 1 -8,8 H30 a8,8 0 0 1 -8,-8 V32 a8,8 0 0 1 8,-8 Z" />
+    <path android:fillColor="#38BDF8" android:pathData="M63,32 a6,6 0 1 0 0.01,0 Z" />
+    <path android:fillColor="#60A5FA" android:pathData="M27,68 L43,45 L53,59 L59,51 L70,68 Z" />
+    <path android:fillColor="#0E1A36" android:pathData="M72,55 a13,13 0 1 0 0.01,0 Z" />
+    <path
         android:strokeColor="#38BDF8"
-        android:strokeWidth="4.5"
+        android:strokeWidth="3"
+        android:pathData="M72,59 a9,9 0 1 0 0.01,0 Z" />
+    <path android:fillColor="#38BDF8" android:pathData="M72,64.5 a3.5,3.5 0 1 0 0.01,0 Z" />
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="3"
         android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M24,38 V30 a4,4 0 0 1 4,-4 H38 M70,26 H80 a4,4 0 0 1 4,4 V38 M24,70 V80 a4,4 0 0 0 4,4 H38 M70,84 H80 a4,4 0 0 0 4,-4 V70" />
-    <path android:fillColor="#BAE6FD" android:pathData="M41,36 a5.5,5.5 0 1 0 0.01,0 Z" />
-    <path android:fillColor="#38BDF8" android:pathData="M31,70 L44,50 L52,62 L58,54 L71,70 Z" />
-    <path
-        android:strokeColor="#7DD3FC"
-        android:strokeWidth="2.6"
-        android:pathData="M62,56 m-10,0 a10,10 0 1 1 20,0 a10,10 0 1 1 -20,0" />
-    <path
-        android:fillColor="#F2F4F8"
-        android:strokeColor="#0A0C10"
-        android:strokeWidth="2"
-        android:strokeLineJoin="round"
-        android:pathData="M62,56 L62,80 L67.8,74.4 L71.4,83 L75.6,81.2 L72,72.8 L79.5,72.8 Z" />
+        android:pathData="M72,52 V58 M72,78 V84 M57,68 H63 M81,68 H87" />
 </vector>

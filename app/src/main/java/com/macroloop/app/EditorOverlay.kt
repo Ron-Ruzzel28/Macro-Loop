@@ -772,19 +772,19 @@ class EditorOverlay(
         return row
     }
 
-    private fun imageContent(templateId: String, appear: Boolean, pct: Int): View {
+    private fun imageContent(templateId: String, appear: Boolean, pct: Int, skip: Boolean = false): View {
         val line = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        line.addView(label("Image", 13f, TokenInts.text))
+        line.addView(label(if (skip) "Skip if image" else "Image", 13f, TokenInts.text))
         thumb(templateId)?.let { line.addView(it, LinearLayout.LayoutParams(dp(68), dp(30)).apply { marginStart = dp(6); marginEnd = dp(6) }) }
         line.addView(label("[${if (appear) "Appears" else "Not appear"}] [$pct%]", 12f, TokenInts.textMuted))
         return line
     }
 
     private fun conditionContent(c: Condition): Pair<View, String?> = when (c.kind) {
-        ConditionKind.IMAGE -> imageContent(c.templateId, c.mustAppear, c.threshold) to locText(c.wholeScreen, c.exact)
+        ConditionKind.IMAGE -> imageContent(c.templateId, c.mustAppear, c.threshold, c.skipWhen) to locText(c.wholeScreen, c.exact)
         ConditionKind.ACTION_RESULT -> label("Action Result  [${if (c.resultOk) "Success" else "Failed"}]", 13f, TokenInts.text) to null
         ConditionKind.RANDOM -> label("Random True  [${c.percent}%]", 13f, TokenInts.text) to null
         ConditionKind.ONCE -> label("Once True", 13f, TokenInts.text) to null
@@ -1745,10 +1745,13 @@ class EditorOverlay(
                 },
                 Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(s.threshold) { v -> edit(ref) { it.copy(threshold = v) } } },
                 Row("Edit Detect Location", icon = Icon.PENCIL) { pictureLocationDialog(s.wholeScreen, s.exact) { w, e -> edit(ref) { it.copy(wholeScreen = w, exact = e) } } },
+                Row(if (s.fine) "Small details: On (tap to turn off)" else "Small details: Off (tap to turn on)", icon = Icon.GEAR) {
+                    closeMenu(); edit(ref) { it.copy(fine = !it.fine) }; refreshPanel(); toast(if (!s.fine) "Small details on: full detail and colour matching." else "Small details off.")
+                },
                 Row("Edit Image", icon = Icon.PENCIL) { editImageDialog(ref) },
                 Row("Test Condition", TokenInts.success, Icon.PLAY) {
                     closeMenu()
-                    testMatch(s.templateId, s.boxX, s.boxY, s.boxW, s.boxH, s.capW, s.threshold, s.wholeScreen, true, "the picture", s.exact)
+                    testMatch(s.templateId, s.boxX, s.boxY, s.boxW, s.boxH, s.capW, s.threshold, s.wholeScreen, true, "the picture", s.exact, s.fine)
                 },
             ),
         )
@@ -1774,12 +1777,15 @@ class EditorOverlay(
                 })
                 rows.add(Row("Edit Similarity %", icon = Icon.PENCIL) { similarityDialog(c.threshold) { v -> upd { it.copy(threshold = v) } } })
                 rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { pictureLocationDialog(c.wholeScreen, c.exact) { w, e -> upd { it.copy(wholeScreen = w, exact = e) } } })
+                rows.add(Row(if (c.fine) "Small details: On (tap to turn off)" else "Small details: Off (tap to turn on)", icon = Icon.GEAR) {
+                    closeMenu(); upd { it.copy(fine = !it.fine) }; refreshPanel(); toast(if (!c.fine) "Small details on: full detail and colour matching." else "Small details off.")
+                })
                 rows.add(Row(if (c.mustAppear) "Change to Not appear" else "Change to Appears", icon = Icon.REDO) {
                     closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
                 })
                 rows.add(Row("Test Condition", TokenInts.success, Icon.PLAY) {
                     closeMenu()
-                    testMatch(c.templateId, c.boxX, c.boxY, c.boxW, c.boxH, c.capW, c.threshold, c.wholeScreen, c.mustAppear, c.label, c.exact)
+                    testMatch(c.templateId, c.boxX, c.boxY, c.boxW, c.boxH, c.capW, c.threshold, c.wholeScreen, c.mustAppear, c.label, c.exact, c.fine)
                 })
             }
             ConditionKind.ACTION_RESULT -> rows.add(Row("Change to " + if (c.resultOk) "Failed" else "Success", icon = Icon.REDO) {
@@ -1887,6 +1893,14 @@ class EditorOverlay(
                 Triple(Icon.PENCIL, "Text Not Appear") { closeMenu(); addTextCondition(false) { c -> edit(ref) { it.copy(conditions = it.conditions + c) }; refreshPanel() } },
             ),
         )
+        sectionTitle(body, "Skip this step")
+        gridRows(
+            body,
+            listOf(
+                Triple(Icon.PICTURE, "Skip If Image Appears") { closeMenu(); addImageCondition(ref, true, skip = true) },
+                Triple(Icon.PICTURE, "Skip If Image Not There") { closeMenu(); addImageCondition(ref, false, skip = true) },
+            ),
+        )
         sectionTitle(body, "Macro")
         gridRows(
             body,
@@ -1929,7 +1943,7 @@ class EditorOverlay(
             fun finish(col: Int) = onDone(
                 Condition(
                     kind = ConditionKind.COLOR, color = col, mustAppear = mode != 1, changes = mode == 2,
-                    wholeScreen = mode != 2, tolerance = if (mode == 2) 12 else 20,
+                    wholeScreen = mode != 2, tolerance = if (mode == 2) 12 else 20, minPct = if (mode == 2) 0.0 else 0.2,
                     label = if (mode == 2) "Colour change" else "Colour ${ScreenCheck.hex(col)}",
                     boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
                 ),
@@ -1985,6 +1999,12 @@ class EditorOverlay(
             }, { upd { it.copy(tolerance = (f?.text.toString().toIntOrNull() ?: c.tolerance).coerceIn(1, 60)) } })
         })
         if (!c.changes) {
+            val sizes = listOf("Tiny dot (0.02%)" to 0.02, "Small icon (0.2%)" to 0.2, "Medium (2%)" to 2.0, "Large (10%)" to 10.0, "Most of the area (30%)" to 30.0)
+            val now = if (c.minPct <= 0.0) "standard" else ScreenCheck.pctText(c.minPct / 100.0)
+            rows.add(Row("How much colour: $now", icon = Icon.GEAR) {
+                val cur = sizes.indexOfFirst { it.second == c.minPct }
+                showChoice("How much of the area must be this colour?", sizes.map { it.first }, cur) { k -> upd { it.copy(minPct = sizes[k].second) }; refreshPanel() }
+            })
             rows.add(Row("Edit Detect Location", icon = Icon.PENCIL) { detectLocationDialog(c.wholeScreen) { v -> upd { it.copy(wholeScreen = v) } } })
             rows.add(Row(if (c.mustAppear) "Change to Not appear" else "Change to Appears", icon = Icon.REDO) {
                 closeMenu(); upd { it.copy(mustAppear = !it.mustAppear) }; refreshPanel()
@@ -2031,12 +2051,12 @@ class EditorOverlay(
         }
     }
 
-    private fun addImageCondition(ref: Ref, appear: Boolean) {
+    private fun addImageCondition(ref: Ref, appear: Boolean, skip: Boolean = false) {
         newOrExist { box, id, fw, fh ->
             val n = (stepAt(ref)?.conditions?.size ?: 0)
             val c = Condition(
                 kind = ConditionKind.IMAGE, templateId = id, mustAppear = appear, wholeScreen = false,
-                label = "Condition ${ref.index + 1}${('a' + n)}", exact = true, threshold = takeSuggested() ?: 70,
+                label = "Condition ${ref.index + 1}${('a' + n)}", exact = true, threshold = takeSuggested() ?: 70, skipWhen = skip,
                 boxX = box.left, boxY = box.top, boxW = box.width(), boxH = box.height(), capW = fw, capH = fh,
             )
             edit(ref) { it.copy(conditions = it.conditions + c) }
@@ -2969,7 +2989,7 @@ class EditorOverlay(
     // ================================================================ tests
 
     /** Looks for one picture right now and shows where it is, with the score and the time it took. */
-    private fun testMatch(templateId: String, bx: Int, by: Int, bw: Int, bh: Int, capW: Int, threshold: Int, whole: Boolean, mustAppear: Boolean, name: String, exact: Boolean = false) {
+    private fun testMatch(templateId: String, bx: Int, by: Int, bw: Int, bh: Int, capW: Int, threshold: Int, whole: Boolean, mustAppear: Boolean, name: String, exact: Boolean = false, fine: Boolean = false) {
         val t = TemplateStore.load(templateId)
         if (t == null) {
             toast("This picture is missing. Use Change Image.")
@@ -2992,7 +3012,7 @@ class EditorOverlay(
             }
             val scale = if (capW > 0) frame.width.toDouble() / capW else 1.0
             val region = Matcher.regionFor(whole, exact, bx, by, bw, bh, scale, frame.width, frame.height)
-            val res = withContext(Dispatchers.Default) { Matcher.find(frame, t, region, threshold, scale) }
+            val res = withContext(Dispatchers.Default) { Matcher.find(frame, t, region, threshold, scale, fine = fine) }
             DebugState.record(frame, res, threshold, name)
             if (!res.tooPlain) showFlash(res)
             val pct = (res.score * 100).toInt()

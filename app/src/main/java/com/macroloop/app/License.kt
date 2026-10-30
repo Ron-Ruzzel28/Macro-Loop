@@ -223,7 +223,11 @@ object License {
                         .putLong("until", parseTime(j.optString("until", "")))
                         .putLong("server_time", parseTime(j.optString("server_time", "")))
                         .putLong("received", System.currentTimeMillis())
+                        .putBoolean("name_locked", j.optBoolean("name_locked", false))
                         .apply()
+                    if (j.optBoolean("name_locked", false) && j.optString("name", "").isNotBlank()) {
+                        prefs(app).edit().putString("name", j.optString("name")).apply()
+                    }
                     offline = false
                 }
             }
@@ -232,6 +236,28 @@ object License {
         } finally {
             checking = false
             evaluate(app)
+        }
+    }
+
+    /** True once the owner has switched this phone on: the name is then fixed and only the owner can change it. */
+    fun nameLocked(ctx: Context): Boolean = prefs(ctx).getBoolean("name_locked", false)
+
+    /** Uses a one-time claim code from the owner. Returns "" when it worked, or a short reason. */
+    suspend fun claim(ctx: Context, code: String): String {
+        val app = ctx.applicationContext
+        return try {
+            val j = withContext(Dispatchers.IO) { post("claim_code", JSONObject().put("p_device", rawCode(app)).put("p_code", code.trim())) }
+            when {
+                j.optBoolean("ok", false) -> { checkIn(app); "" }
+                j.optString("error") == "used" -> "This code was already used."
+                j.optString("error") == "expired" -> "This code has expired. Ask the owner for a new one."
+                j.optString("error") == "nothing_left" -> "The old phone has no time left to move."
+                j.optString("error") == "too_many" -> "Too many wrong tries. Try again in an hour."
+                j.optString("error") == "unknown" -> "That code is not right. Check it and try again."
+                else -> "The server could not use that code."
+            }
+        } catch (e: Exception) {
+            "No internet. Connect and try again."
         }
     }
 
