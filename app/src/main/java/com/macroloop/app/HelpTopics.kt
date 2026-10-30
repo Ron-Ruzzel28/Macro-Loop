@@ -19,14 +19,14 @@ object HelpTopics {
 
     init {
         g("Start here")
-        t("tour", "How a macro works", "A macro is a list of steps. MacroLoop does them one after another, top to bottom. A step can tap, swipe, wait or look at the screen.",
+        t("tour", "How a macro works", "A macro is a list of steps. TapLens does them one after another, top to bottom. A step can tap, swipe, wait or look at the screen.",
             "Step 1: Open App. Step 2: Click Image on the Claim button. Step 3: Wait 2 seconds.",
             "Build it one step at a time and press Test this step after each one. Do not build a long macro and test it only at the end.",
             "Adding many steps before testing any. When something is wrong you will not know which step it was.")
 
         g("Actions (the + button)")
         t("click_image", "Click Image", "Looks for a small picture on the screen and taps it. This is the most reliable way to tap a button, because it still works if the button moves.",
-            "Capture the Claim button. MacroLoop finds it and taps it, wherever it is on the screen.",
+            "Capture the Claim button. TapLens finds it and taps it, wherever it is on the screen.",
             "Draw the box tight around the part of the button that never changes, then use Re-crop to trim it.",
             "Including the background in the picture. When the background changes, the picture is no longer found.")
         t("click_xy", "Click (x, y)", "Taps one fixed spot on the screen, even if nothing is there.",
@@ -71,7 +71,7 @@ object HelpTopics {
         t("cond_color_appear", "Colour Appears", "The step only runs when this colour is on the screen.", "A bar turns green when it is ready.", "Good for bars, badges and red dots. Colour is quicker than a picture. Use a small area.", "Picking a colour that is also in the background.")
         t("cond_color_not", "Colour Not Appear", "The step only runs when this colour is NOT there.", "Wait until the red badge goes away.", "Pick the colour from the screen with the box, not by guessing.")
         t("cond_color_changes", "Colour Changes", "True when the colour in the area changes from how it was.", "Hold a button until the bar changes colour.", "Draw the box around the part that changes and nothing else.", "A box that includes something that always moves. It always counts as changed.")
-        t("cond_text_appear", "Text Appears", "The step only runs when these words are on the screen. MacroLoop reads the screen, no internet needed.", "Only continue when \"Daily Reward\" is showing.",
+        t("cond_text_appear", "Text Appears", "The step only runs when these words are on the screen. TapLens reads the screen, no internet needed.", "Only continue when \"Daily Reward\" is showing.",
             "Good for labels, because it still works when the colours or the style change. Draw the box around just the words.", "Typing the words differently from the screen. Spelling matters (capital letters do not).")
         t("cond_text_not", "Text Not Appear", "The step only runs when these words are NOT on the screen.", "Wait until \"Loading\" is gone.", "A good way to wait for a loading screen to end.")
         t("cond_action_result", "Action Result", "True if the step before worked (Success) or did not work (Failed).", "If the last tap failed, press Back.", "Use Failed to build a fix for when something goes wrong.")
@@ -161,7 +161,7 @@ object HelpTopics {
             "Keep it on for games. Set Repeat to 0 on the macro's info page to keep going until you press Stop. A pass where nothing happened does not count as a repeat.",
             "Expecting it to wait for a slow loading screen. Use Scan mode off for a step that must wait.")
         t("counters", "Counters", "Numbers the macro can add to and check. You make them here, then use them in steps and conditions.", "\"claims\", kept between runs, to stop after 5 a day.", "Tick \"keep between runs\" for daily limits.")
-        t("stuck_check", "Stuck check", "If the screen does not change for this many seconds, MacroLoop runs the Stuck rescue steps.", "30 seconds.",
+        t("stuck_check", "Stuck check", "If the screen does not change for this many seconds, TapLens runs the Stuck rescue steps.", "30 seconds.",
             "A game with a moving background is not counted as stuck. It looks for a frozen screen. Needs screen capture.", "Setting it shorter than a normal long wait.")
         t("schedule", "Schedule", "Starts the macro by itself at times you choose, on days you choose.", "06:00 and 18:30, every day, stop after 20 minutes.",
             "Before it starts the phone must be unlocked, Accessibility on and screen capture started. Press Save to apply.", "Expecting it to run on a locked phone.")
@@ -174,7 +174,7 @@ object HelpTopics {
         t("more", "More", "Extra settings: timing and debug.")
         t("exit", "Exit", "Closes the editor.", "", "Choose Save and exit, or you can lose your changes.")
         t("random_setting", "Random Setting", "Adds small random pauses and tap offsets so taps are never exactly the same.", "", "Leave it on.")
-        t("debug_setting", "Debug Setting", "Show Detect Location draws a box where a picture was found. Show taps draws a ring where each tap is sent, so you can see if MacroLoop tapped and where.", "", "Turn them on while you test, off afterwards. If a step 'does not tap', Show taps tells you if the tap was sent.")
+        t("debug_setting", "Debug Setting", "Show Detect Location draws a box where a picture was found. Show taps draws a ring where each tap is sent, so you can see if TapLens tapped and where.", "", "Turn them on while you test, off afterwards. If a step 'does not tap', Show taps tells you if the tap was sent.")
         t("btn_shrink", "Shrink button", "Folds the step list back into the round button.")
         t("btn_test", "Test button (green play)", "Runs the whole macro once, from the top.")
         t("btn_plus", "Plus button", "Adds a step. In Watchers it adds a new watcher.")

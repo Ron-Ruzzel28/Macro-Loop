@@ -177,6 +177,9 @@ class EditorOverlay(
 
     private fun dp(v: Int) = Ui.dp(ctx, v)
 
+    /** A touch area: follows the Size setting but never goes under [floor] dp, so it stays easy to hit. */
+    private fun touch(v: Int, floor: Int = 40) = maxOf(dp(v), Ui.dpFixed(ctx, floor))
+
     // ================================================================ the macro tree
 
     private fun listAt(path: Path): List<Step> {
@@ -254,12 +257,12 @@ class EditorOverlay(
 
     private fun infoBtn(topic: Topic): View = TextView(ctx).apply {
         text = "ⓘ"
-        textSize = 17f
+        textSize = Ui.sp(17f)
         setTextColor(TokenInts.primary)
         gravity = Gravity.CENTER
         setPadding(dp(8), 0, dp(8), 0)
-        minimumWidth = dp(40)
-        minimumHeight = dp(40)
+        minimumWidth = touch(40, 34)
+        minimumHeight = touch(40, 34)
         contentDescription = "Help: ${topic.title}"
         isClickable = true
         setOnClickListener { showHelp(topic) }
@@ -290,7 +293,11 @@ class EditorOverlay(
             more.addView(label(head, 12f, color).apply { setTypeface(typeface, Typeface.BOLD) }, lp(10))
             more.addView(label(text, 14f, TokenInts.text), lp(2))
         }
-        part("EXAMPLE", topic.example, TokenInts.primary)
+        // the example is always in view, because it is what makes the words click; the tip and the mistake sit behind MORE
+        if (topic.example.isNotEmpty()) {
+            body.addView(label("EXAMPLE", 12f, TokenInts.primary).apply { setTypeface(typeface, Typeface.BOLD) }, lp(10))
+            body.addView(label(topic.example, 14f, TokenInts.text), lp(2))
+        }
         part("BEST TIP", topic.tip, TokenInts.success)
         part("COMMON MISTAKE", topic.mistake, TokenInts.warning)
         if (tour) {
@@ -402,12 +409,16 @@ class EditorOverlay(
 
     private fun addChip() {
         rm(chip)
-        val size = dp(52)
+        // the round button is small, but its window has an invisible rim, so a thumb still hits it
+        val dot = dp(46)
+        val rim = Ui.dpFixed(ctx, 8)
+        val size = dot + rim * 2
         val v = FrameLayout(ctx).apply {
-            background = Ui.rounded(TokenInts.primary, size / 2f)
-            contentDescription = "MacroLoop editor"
+            contentDescription = "TapLens editor"
         }
-        v.addView(IconView(ctx, Icon.TAP, TokenInts.onPrimary), FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
+        val round = FrameLayout(ctx).apply { background = Ui.rounded(TokenInts.primary, dot / 2f) }
+        round.addView(IconView(ctx, Icon.TAP, TokenInts.onPrimary), FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+        v.addView(round, FrameLayout.LayoutParams(dot, dot, Gravity.CENTER))
         val lp = params(size, size, chipX, chipY)
         makeDraggable(v, v, lp, onMoved = { chipX = lp.x; chipY = lp.y }, onTap = { toggleChipMenu() })
         wm.addView(v, lp)
@@ -437,11 +448,21 @@ class EditorOverlay(
         showMenu(
             "More",
             listOf(
+                Row("Size", icon = Icon.GEAR) { sizeDialog() },
                 Row("Random Setting", icon = Icon.GEAR) { randomSettingDialog() },
                 Row("Debug Setting", icon = Icon.GEAR) { debugSettingDialog() },
             ),
             anchor = chipX to (chipY + dp(60)),
         )
+    }
+
+    /** Small, Normal or Large for everything this editor draws. The editor is rebuilt at once, so the change is seen right away. */
+    private fun sizeDialog() {
+        showChoice("Size", listOf("Small", "Normal (default)", "Large"), Ui.sizeIndex(ctx)) { i ->
+            Ui.setSize(ctx, i)
+            closeMenu()
+            if (panel != null) refreshPanel() else { rm(chip); chip = null; addChip() }
+        }
     }
 
     private fun randomSettingDialog() {
@@ -518,7 +539,7 @@ class EditorOverlay(
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        head.addView(holdHelp(IconBtn(ctx, Icon.SHRINK) { shrinkToChip() }, "btn_shrink"), LinearLayout.LayoutParams(dp(44), dp(44)))
+        head.addView(holdHelp(IconBtn(ctx, Icon.SHRINK) { shrinkToChip() }, "btn_shrink"), LinearLayout.LayoutParams(touch(44), touch(44)))
         val titleCol = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         titleCol.addView(label(macroName, 17f, TokenInts.text).apply {
             maxLines = 1
@@ -532,8 +553,8 @@ class EditorOverlay(
         head.addView(titleCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10); marginEnd = dp(6) })
         head.addView(holdHelp(IconBtn(ctx, Icon.PLAY, TokenInts.success) {
             showMenu("Test", listOf(Row("Run Test: From beginning", icon = Icon.PLAY, help = false) { closeMenu(); runTest(0, Ref(emptyList(), 0)) }), anchor = (screenW - dp(250)) to dp(90))
-        }, "btn_test"), LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(6) })
-        head.addView(holdHelp(IconBtn(ctx, Icon.PLUS) { if (section == 1) addWatcher() else openActionPicker(Target(emptyList())) }, "btn_plus"), LinearLayout.LayoutParams(dp(44), dp(44)))
+        }, "btn_test"), LinearLayout.LayoutParams(touch(44), touch(44)).apply { marginEnd = dp(6) })
+        head.addView(holdHelp(IconBtn(ctx, Icon.PLUS) { if (section == 1) addWatcher() else openActionPicker(Target(emptyList())) }, "btn_plus"), LinearLayout.LayoutParams(touch(44), touch(44)))
         rootView.addView(head)
 
         val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
@@ -716,7 +737,7 @@ class EditorOverlay(
 
     private fun circle(text: String, fill: Int, textColor: Int, sizeDp: Int): TextView = TextView(ctx).apply {
         this.text = text
-        textSize = sizeDp * 0.42f
+        textSize = Ui.sp(sizeDp * 0.42f)
         setTextColor(textColor)
         gravity = Gravity.CENTER
         background = Ui.rounded(fill, dp(sizeDp) / 2f)
@@ -724,7 +745,7 @@ class EditorOverlay(
 
     private fun pill(text: String, onClick: () -> Unit): TextView = TextView(ctx).apply {
         this.text = text
-        textSize = 12f
+        textSize = Ui.sp(12f)
         setTextColor(TokenInts.onPrimary)
         setTypeface(typeface, Typeface.BOLD)
         setPadding(dp(12), dp(4), dp(12), dp(4))
@@ -931,7 +952,7 @@ class EditorOverlay(
             val line = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(if (act == null) 30 else 46)
+                minimumHeight = if (act == null) dp(30) else touch(46)
                 setPadding(dp(12), dp(if (act == null) 8 else 2), dp(12), dp(2))
             }
             if (act == null) {
@@ -949,14 +970,16 @@ class EditorOverlay(
             list.addView(
                 label("Cancel", 16f, TokenInts.textMuted).apply {
                     gravity = Gravity.CENTER_VERTICAL
-                    minimumHeight = dp(46)
+                    minimumHeight = touch(46)
                     setPadding(dp(12), 0, dp(12), 0)
                     isClickable = true
                     setOnClickListener { closeMenu() }
                 },
             )
         }
-        box.addView(MaxHeightScrollView(ctx, minOf((screenH * 0.85).toInt(), capH(if (anchor != null) anchor.second.coerceIn(0, (screenH - dp(120)).coerceAtLeast(0)) else topY(dp(80)), dp(70)))).apply { addView(list) })
+        val listMax = if (anchor != null) minOf((screenH * 0.85).toInt(), capH(anchor.second.coerceIn(0, (screenH - dp(120)).coerceAtLeast(0)), dp(70)))
+        else minOf((screenH * 0.58).toInt(), capH(topY(dp(80)), dp(70)))
+        box.addView(MaxHeightScrollView(ctx, listMax).apply { addView(list) })
         val w = if (anchor != null) dp(260) else (screenW * 0.9).toInt()
         val p = if (anchor != null) {
             params(w, WindowManager.LayoutParams.WRAP_CONTENT, anchor.first.coerceIn(0, screenW - w), anchor.second.coerceIn(0, (screenH - dp(120)).coerceAtLeast(0)), outside = true)
@@ -1023,7 +1046,7 @@ class EditorOverlay(
         val e = EditText(ctx).apply {
             setText(initial)
             setSelection(initial.length)
-            textSize = 17f
+            textSize = Ui.sp(17f)
             setTextColor(TokenInts.text)
             setSingleLine(true)
             imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or android.view.inputmethod.EditorInfo.IME_ACTION_DONE
@@ -1050,7 +1073,7 @@ class EditorOverlay(
             val marks = ArrayList<TextView>()
             options.forEachIndexed { k, name ->
                 val row = label((if (k == pick) "◉  " else "○  ") + name, 16f, TokenInts.text).apply {
-                    minimumHeight = dp(46)
+                    minimumHeight = touch(46)
                     gravity = Gravity.CENTER_VERTICAL
                     isClickable = true
                 }
@@ -1077,7 +1100,7 @@ class EditorOverlay(
 
     private fun textButton(text: String, onClick: () -> Unit) = TextView(ctx).apply {
         this.text = text
-        textSize = 15f
+        textSize = Ui.sp(15f)
         setTextColor(TokenInts.primary)
         setTypeface(typeface, Typeface.BOLD)
         setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -1087,10 +1110,10 @@ class EditorOverlay(
 
     private fun checkBox(text: String, checked: Boolean, onChange: (Boolean) -> Unit) = CheckBox(ctx).apply {
         this.text = text
-        textSize = 16f
+        textSize = Ui.sp(16f)
         setTextColor(TokenInts.text)
         isChecked = checked
-        minHeight = dp(48)
+        minHeight = touch(48)
         setOnCheckedChangeListener { _, on -> onChange(on) }
     }
 
@@ -1811,9 +1834,9 @@ class EditorOverlay(
             }
             box.addView(num, lp(10))
             val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            row.addView(textButton("−") { set(v - 1) }.apply { textSize = 24f })
+            row.addView(textButton("−") { set(v - 1) }.apply { textSize = Ui.sp(24f) })
             row.addView(bar, LinearLayout.LayoutParams(0, dp(48), 1f))
-            row.addView(textButton("+") { set(v + 1) }.apply { textSize = 24f })
+            row.addView(textButton("+") { set(v + 1) }.apply { textSize = Ui.sp(24f) })
             box.addView(row, lp(6))
             box.addView(label("How alike the picture on screen must be to the saved picture. Higher is stricter. Below about 50% almost anything matches. 70 is a good start for a picture searched in its own spot.", 12f, TokenInts.textMuted), lp(8))
             val buttons = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
@@ -1993,7 +2016,7 @@ class EditorOverlay(
     /** Looks at the screen once and says whether a colour or text condition holds right now. */
     private fun testScreen(c: Condition) {
         if (!CaptureService.running) {
-            toast("Screen capture is off. Open MacroLoop, press Edit Mode, and tap Start.")
+            toast("Screen capture is off. Open TapLens, press Edit Mode, and tap Start.")
             return
         }
         val svc = MacroService.instance ?: return
@@ -2373,7 +2396,7 @@ class EditorOverlay(
                     val line = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
                     chunk.forEachIndexed { k, name ->
                         val bit = 1 shl (row * 4 + k)
-                        line.addView(checkBox(name, days and bit != 0) { c -> days = if (c) days or bit else days and bit.inv() }.apply { textSize = 14f },
+                        line.addView(checkBox(name, days and bit != 0) { c -> days = if (c) days or bit else days and bit.inv() }.apply { textSize = Ui.sp(14f) },
                             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                     }
                     b.addView(line)
@@ -2461,9 +2484,9 @@ class EditorOverlay(
             fun nudgeRow(name: String, valueView: TextView, dx: Int, dy: Int): View {
                 val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
                 row.addView(label(name, 15f, TokenInts.text), LinearLayout.LayoutParams(dp(28), LinearLayout.LayoutParams.WRAP_CONTENT))
-                row.addView(textButton("−") { zoom.setPixel(zoom.px - dx, zoom.py - dy); show(zoom.colorHere()) }.apply { textSize = 22f })
+                row.addView(textButton("−") { zoom.setPixel(zoom.px - dx, zoom.py - dy); show(zoom.colorHere()) }.apply { textSize = Ui.sp(22f) })
                 row.addView(valueView, LinearLayout.LayoutParams(dp(60), LinearLayout.LayoutParams.WRAP_CONTENT))
-                row.addView(textButton("+") { zoom.setPixel(zoom.px + dx, zoom.py + dy); show(zoom.colorHere()) }.apply { textSize = 22f })
+                row.addView(textButton("+") { zoom.setPixel(zoom.px + dx, zoom.py + dy); show(zoom.colorHere()) }.apply { textSize = Ui.sp(22f) })
                 return row
             }
             xv = label("", 15f, TokenInts.text).apply { gravity = Gravity.CENTER }
@@ -2473,7 +2496,7 @@ class EditorOverlay(
 
             swatch = View(ctx)
             hexBox = EditText(ctx).apply {
-                textSize = 16f
+                textSize = Ui.sp(16f)
                 setTextColor(TokenInts.text)
                 setSingleLine(true)
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
@@ -2557,7 +2580,7 @@ class EditorOverlay(
             return
         }
         if (!CaptureService.running) {
-            toast("Screen capture is off. Open MacroLoop, press Edit Mode, and tap Start.")
+            toast("Screen capture is off. Open TapLens, press Edit Mode, and tap Start.")
             return
         }
         scope.launch {
@@ -2749,7 +2772,7 @@ class EditorOverlay(
         bar.addView(info)
         fun icon(i: Icon, color: Int, help: String, act: () -> Unit) = IconBtn(ctx, i, color, 44) { act() }.also {
             holdHelp(it, help)
-            bar.addView(it, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
+            bar.addView(it, LinearLayout.LayoutParams(touch(44), touch(44)).apply { marginStart = dp(6) })
         }
         icon(Icon.REDO, TokenInts.primary, "btn_redo") {
             val b = capBoxLp ?: return@icon
@@ -2818,7 +2841,7 @@ class EditorOverlay(
                 when {
                     f == null -> why = "Could not see the screen."
                     ScreenCheck.isBlank(f) -> why = "The screen was blank."
-                    ScreenCheck.markerShows(f, region) -> why = "The green square was still on the screen."
+                    ScreenCheck.markerShows(f, region) -> why = "The blue square was still on the screen."
                     else -> { frame = f; break }
                 }
                 delay(350)
@@ -2953,7 +2976,7 @@ class EditorOverlay(
             return
         }
         if (!CaptureService.running) {
-            toast("Screen capture is off. Open MacroLoop, press Edit Mode, and tap Start.")
+            toast("Screen capture is off. Open TapLens, press Edit Mode, and tap Start.")
             return
         }
         scope.launch {
@@ -3102,7 +3125,7 @@ class EditorOverlay(
 
     private fun label(text: String, size: Float, color: Int) = TextView(ctx).apply {
         this.text = text
-        textSize = size
+        textSize = Ui.sp(size)
         setTextColor(color)
     }
 

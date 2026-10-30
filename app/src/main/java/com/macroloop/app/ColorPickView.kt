@@ -31,12 +31,12 @@ class ColorPickView(
     private val ringDark = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         style = Paint.Style.STROKE
-        strokeWidth = Ui.dp(context, 4).toFloat()
+        strokeWidth = Ui.dpFixed(context, 4).toFloat()
     }
     private val ringLight = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = Ui.dp(context, 2).toFloat()
+        strokeWidth = Ui.dpFixed(context, 2).toFloat()
     }
 
     private fun scale() = min(width.toFloat() / bmp.width, height.toFloat() / bmp.height)
@@ -56,7 +56,7 @@ class ColorPickView(
         val l = left()
         val t = top()
         c.drawBitmap(bmp, null, RectF(l, t, l + bmp.width * s, t + bmp.height * s), pic)
-        val pad = Ui.dp(context, 3).toFloat()
+        val pad = Ui.dpFixed(context, 3).toFloat()
         val r = RectF(l + px * s - pad, t + py * s - pad, l + (px + 1) * s + pad, t + (py + 1) * s + pad)
         c.drawRect(r, ringDark)
         c.drawRect(r, ringLight)

@@ -81,7 +81,7 @@ object MacroShare {
         return header + nonce + cipher.doFinal(zip.toByteArray())
     }
 
-    /** The share id inside a file, or null if it is not a MacroLoop file. */
+    /** The share id inside a file, or null if it is not a TapLens file. */
     fun shareIdOf(bytes: ByteArray): String? {
         if (bytes.size < HEADER_LEN + NONCE_LEN + 16) return null
         if (!bytes.copyOfRange(0, 4).contentEquals(MAGIC)) return null
@@ -180,7 +180,7 @@ object MacroShare {
 
     /** Import a file. Needs the internet (for the key) and a switched-on phone. */
     suspend fun import(ctx: Context, bytes: ByteArray): Outcome {
-        val shareId = shareIdOf(bytes) ?: return Outcome(false, "This is not a MacroLoop macro file.")
+        val shareId = shareIdOf(bytes) ?: return Outcome(false, "This is not a TapLens macro file.")
         if (!License.switchedOn(ctx)) return Outcome(false, "Only a phone the owner has switched on can open shared macros.")
         val answer = License.getShareKey(ctx, shareId)
         if (!answer.ok) return Outcome(false, answer.error)

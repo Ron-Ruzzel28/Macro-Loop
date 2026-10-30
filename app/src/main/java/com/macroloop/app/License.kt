@@ -140,7 +140,7 @@ object License {
 
         if (status == null) {
             state = State.UNKNOWN
-            message = if (offline) "MacroLoop needs the internet once to start your trial." else "Checking your access..."
+            message = if (offline) "TapLens needs the internet once to start your trial." else "Checking your access..."
             return false
         }
         val until = p.getLong("until", 0L)
@@ -159,7 +159,7 @@ object License {
                     }
                     clockBack || age < -CLOCK_SLACK_MS || age > GRACE_MS -> {
                         state = State.LOCKED
-                        message = "MacroLoop needs to check with the server. Connect to the internet and tap Check again."
+                        message = "TapLens needs to check with the server. Connect to the internet and tap Check again."
                         false
                     }
                     else -> {

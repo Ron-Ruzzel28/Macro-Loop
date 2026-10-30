@@ -186,7 +186,7 @@ object MacroScheduler {
         }
         val svc = MacroService.instance
         if (svc == null) {
-            due.forEach { skip(it, "Accessibility is off, so MacroLoop cannot tap. Turn it on in MacroLoop's Set up page") }
+            due.forEach { skip(it, "Accessibility is off, so TapLens cannot tap. Turn it on in TapLens's Set up page") }
             done()
             return
         }

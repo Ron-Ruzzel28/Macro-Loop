@@ -313,8 +313,8 @@ class CaptureService : Service() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Screen capture", NotificationManager.IMPORTANCE_LOW))
         val n = Notification.Builder(this, CHANNEL)
-            .setContentTitle("MacroLoop can see the screen")
-            .setContentText("Needed to find pictures. Turn it off in MacroLoop > Set up.")
+            .setContentTitle("TapLens can see the screen")
+            .setContentText("Needed to find pictures. Turn it off in TapLens > Set up.")
             .setSmallIcon(android.R.drawable.stat_notify_more)
             .setOngoing(true)
             .build()

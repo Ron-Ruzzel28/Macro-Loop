@@ -39,6 +39,25 @@ object MacroRepository {
         return m
     }
 
+    /** A ready-made macro with no pictures and no taps: it only shows messages and waits, so it is safe to play anywhere. It shows how steps run in order. */
+    fun createSample(): Macro {
+        val m = Macro(
+            id = UUID.randomUUID().toString(),
+            name = "Demo: how steps work",
+            repeat = 1,
+            steps = listOf(
+                Step(StepType.TOAST, name = "Say hello", text = "Step 1: TapLens shows this message."),
+                Step(StepType.WAIT, name = "Wait 2 seconds", ms = 2000),
+                Step(StepType.TOAST, name = "Say it came later", text = "Step 3: this came 2 seconds later."),
+                Step(StepType.WAIT, name = "Wait 2 seconds more", ms = 2000),
+                Step(StepType.TOAST, name = "Say done", text = "Done! Press EDIT MODE to see how this was made."),
+            ),
+        )
+        macros.add(0, m)
+        persist()
+        return m
+    }
+
     fun save(macro: Macro) {
         val updated = macro.copy(updatedAt = System.currentTimeMillis())
         val i = macros.indexOfFirst { it.id == macro.id }

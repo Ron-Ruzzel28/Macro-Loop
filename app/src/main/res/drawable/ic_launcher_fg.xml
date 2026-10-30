@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TapLens icon: a picture inside capture corners, with a tap cursor and ring on it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M24,38 V30 a4,4 0 0 1 4,-4 H38 M70,26 H80 a4,4 0 0 1 4,4 V38 M24,70 V80 a4,4 0 0 0 4,4 H38 M70,84 H80 a4,4 0 0 0 4,-4 V70" />
+    <path android:fillColor="#BAE6FD" android:pathData="M41,36 a5.5,5.5 0 1 0 0.01,0 Z" />
+    <path android:fillColor="#38BDF8" android:pathData="M31,70 L44,50 L52,62 L58,54 L71,70 Z" />
+    <path
+        android:strokeColor="#7DD3FC"
+        android:strokeWidth="2.6"
+        android:pathData="M62,56 m-10,0 a10,10 0 1 1 20,0 a10,10 0 1 1 -20,0" />
+    <path
+        android:fillColor="#F2F4F8"
+        android:strokeColor="#0A0C10"
+        android:strokeWidth="2"
+        android:strokeLineJoin="round"
+        android:pathData="M62,56 L62,80 L67.8,74.4 L71.4,83 L75.6,81.2 L72,72.8 L79.5,72.8 Z" />
+</vector>

@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private var accessibilityOn by mutableStateOf(false)
+    private var uiSize by mutableStateOf(1)     // 0 Small, 1 Normal, 2 Large
     private var batteryOk by mutableStateOf(false)
     private var returnAfterCapture = false
     private var pendingId: String? = null
@@ -172,7 +173,7 @@ class MainActivity : ComponentActivity() {
             val send = Intent(Intent.ACTION_SEND)
                 .setType("application/octet-stream")
                 .putExtra(Intent.EXTRA_STREAM, uri)
-                .putExtra(Intent.EXTRA_SUBJECT, "MacroLoop macro: ${m.name}")
+                .putExtra(Intent.EXTRA_SUBJECT, "TapLens macro: ${m.name}")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             startActivity(Intent.createChooser(send, "Send macro").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
         }
@@ -224,7 +225,7 @@ class MainActivity : ComponentActivity() {
         License.init(applicationContext)
         RunLog.init(applicationContext)
         DraftStore.init(applicationContext)
-        // Android 13 and later: without this, MacroLoop's notices (capture stopped, a scheduled start skipped) are hidden.
+        // Android 13 and later: without this, TapLens's notices (capture stopped, a scheduled start skipped) are hidden.
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
@@ -234,7 +235,9 @@ class MainActivity : ComponentActivity() {
                 notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-        setContent { MacroLoopTheme { App() } }
+        Ui.loadScale(this)
+        uiSize = Ui.sizeIndex(this)
+        setContent { MacroLoopTheme(when (uiSize) { 0 -> 0.75f; 2 -> 1f; else -> 0.85f }) { App() } }
         if (savedInstanceState == null) handleIntent(intent)
     }
 
@@ -308,17 +311,46 @@ class MainActivity : ComponentActivity() {
     private fun HomeScreen(onSetup: () -> Unit, onDebug: () -> Unit, onInfo: (String) -> Unit, onAccount: () -> Unit, onLog: () -> Unit) {
         var showNew by remember { mutableStateOf(false) }
         var menuOpen by remember { mutableStateOf(false) }
+        var showSize by remember { mutableStateOf(false) }
         val homeCtx = LocalContext.current
+        val walkPrefs = homeCtx.getSharedPreferences(MacroService.PREFS, MODE_PRIVATE)
+        var showWalk by remember { mutableStateOf(!walkPrefs.getBoolean("walk_done", false)) }
+        if (showSize) {
+            AlertDialog(
+                onDismissRequest = { showSize = false },
+                title = { Text("Size") },
+                text = {
+                    Column {
+                        Text("How big the app and the editor on your screen look.", fontSize = 13.sp, color = Tokens.textMuted)
+                        listOf("Small", "Normal (default)", "Large").forEachIndexed { k, name ->
+                            Text(
+                                (if (k == uiSize) "◉  " else "○  ") + name,
+                                fontSize = 16.sp,
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    Ui.setSize(homeCtx, k)
+                                    uiSize = k
+                                    showSize = false
+                                }.padding(vertical = 12.dp),
+                            )
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showSize = false }) { Text("CLOSE") } },
+            )
+        }
         var askName by remember { mutableStateOf(!License.hasAskedName(homeCtx)) }
 
         Column(Modifier.fillMaxSize()) {
-            TopBar("MacroLoop", null) {
+            TopBar("TapLens", null) {
                 Text("⚡", fontSize = 22.sp, color = Tokens.onPrimary, modifier = Modifier.clickable { onSetup() }.padding(12.dp))
                 Box {
                     Text("⋮", fontSize = 24.sp, color = Tokens.onPrimary, modifier = Modifier.clickable { menuOpen = true }.padding(12.dp))
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(text = { Text("My access") }, onClick = { menuOpen = false; onAccount() })
+                        DropdownMenuItem(text = { Text("How TapLens works") }, onClick = { menuOpen = false; showWalk = true })
+                        DropdownMenuItem(text = { Text("Add the demo macro") }, onClick = { menuOpen = false; MacroRepository.createSample(); Toast.makeText(homeCtx, "Demo added. Press PLAY MODE to run it, or EDIT MODE to see how it is built.", Toast.LENGTH_LONG).show() })
                         DropdownMenuItem(text = { Text("Run history") }, onClick = { menuOpen = false; onLog() })
+                        DropdownMenuItem(text = { Text("Size: " + listOf("Small", "Normal", "Large")[uiSize]) }, onClick = { menuOpen = false; showSize = true })
                         DropdownMenuItem(text = { Text("Import a macro file") }, onClick = { menuOpen = false; importPicker.launch(arrayOf("*/*")) })
                         DropdownMenuItem(text = { Text("Set up and permissions") }, onClick = { menuOpen = false; onSetup() })
                         DropdownMenuItem(text = { Text("Picture test (advanced)") }, onClick = { menuOpen = false; onDebug() })
@@ -335,7 +367,7 @@ class MainActivity : ComponentActivity() {
                     Column(Modifier.padding(14.dp)) {
                         Text("Screen capture is off", fontSize = 18.sp, color = Tokens.warning, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Your macros look at the screen, so they need it. Android turns it off when MacroLoop is closed.",
+                            "Your macros look at the screen, so they need it. Android turns it off when TapLens is closed.",
                             fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp),
                         )
                         Spacer(Modifier.height(8.dp))
@@ -365,7 +397,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Column(Modifier.padding(14.dp)) {
                         Text("1 thing needs setup", fontSize = 18.sp, color = Tokens.warning, fontWeight = FontWeight.SemiBold)
-                        Text("MacroLoop needs permission to tap for you.", fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
+                        Text("TapLens needs permission to tap for you.", fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
                         Spacer(Modifier.height(8.dp))
                         PrimaryButton("Set up now", onClick = onSetup)
                     }
@@ -410,7 +442,7 @@ class MainActivity : ComponentActivity() {
                 text = {
                     Column {
                         Text(
-                            "Your name helps the owner know which phone to switch on. MacroLoop sends a short code for this phone and your name to the owner's server. Nothing else leaves your phone.",
+                            "Your name helps the owner know which phone to switch on. TapLens sends a short code for this phone and your name to the owner's server. Nothing else leaves your phone.",
                             color = Tokens.textMuted, fontSize = 14.sp,
                         )
                         Spacer(Modifier.height(10.dp))
@@ -427,6 +459,16 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        if (showWalk && !askName) WalkDialog(
+            onClose = { walkPrefs.edit().putBoolean("walk_done", true).apply(); showWalk = false },
+            onDemo = {
+                walkPrefs.edit().putBoolean("walk_done", true).apply()
+                showWalk = false
+                MacroRepository.createSample()
+                Toast.makeText(homeCtx, "Demo added. Press PLAY MODE to run it, or EDIT MODE to see how it is built.", Toast.LENGTH_LONG).show()
+            },
+        )
+
         if (showNew) NewMacroDialog(
             onCreate = { name, landscape ->
                 val m = MacroRepository.create(name, landscape)
@@ -434,6 +476,39 @@ class MainActivity : ComponentActivity() {
                 startMode(m, 1)
             },
             onCancel = { showNew = false },
+        )
+    }
+
+    private val walkPages = listOf(
+        "Welcome to TapLens" to "TapLens taps and swipes for you, and it can find pictures on your screen. You build a macro: a list of steps that run one after another.",
+        "1. Turn it on" to "Tap the ⚡ at the top and follow the short steps: let TapLens tap for you, let it run without limits, and allow screen capture. You do this once.",
+        "2. Make a macro" to "Tap + and give it a name. A round button appears over your game or app. Tap it, choose Manage Actions, then tap + to add steps.",
+        "3. Teach it a picture" to "Add a Click Image step, draw a box around a button on the screen and tap the tick. TapLens finds that button and taps it, even when it moves.",
+        "4. Play it" to "Press PLAY MODE and the macro runs by itself until you stop it. Tap any ⓘ in the editor to see what a step does, with an example.",
+    )
+
+    @Composable
+    private fun WalkDialog(onClose: () -> Unit, onDemo: () -> Unit) {
+        var page by remember { mutableStateOf(0) }
+        val last = page == walkPages.lastIndex
+        AlertDialog(
+            onDismissRequest = onClose,
+            containerColor = Tokens.surfaceHigh,
+            title = { Text(walkPages[page].first, color = Tokens.text) },
+            text = {
+                Column {
+                    Text(walkPages[page].second, color = Tokens.text, fontSize = 15.sp)
+                    if (last) Text("Want to see one working? The demo macro only shows messages and waits, so it is safe to play anywhere.", color = Tokens.textMuted, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
+                    Text("${page + 1} of ${walkPages.size}", color = Tokens.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+                }
+            },
+            confirmButton = { TextButton(onClick = { if (last) onDemo() else page++ }) { Text(if (last) "ADD THE DEMO" else "NEXT", color = Tokens.primary, fontSize = 15.sp) } },
+            dismissButton = {
+                Row {
+                    if (page > 0) TextButton(onClick = { page-- }) { Text("BACK", color = Tokens.primary, fontSize = 15.sp) }
+                    TextButton(onClick = onClose) { Text(if (last) "NO THANKS" else "SKIP", color = Tokens.textMuted, fontSize = 15.sp) }
+                }
+            },
         )
     }
 
@@ -467,7 +542,7 @@ class MainActivity : ComponentActivity() {
                     when {
                         st == License.State.REVOKED -> "This phone is switched off"
                         waiting -> "Checking your access..."
-                        st == License.State.UNKNOWN -> "MacroLoop needs the internet"
+                        st == License.State.UNKNOWN -> "TapLens needs the internet"
                         else -> "Access has ended"
                     },
                     fontSize = 18.sp, color = if (waiting) Tokens.text else Tokens.danger, fontWeight = FontWeight.SemiBold,
@@ -479,7 +554,7 @@ class MainActivity : ComponentActivity() {
                     Row(Modifier.padding(top = 6.dp)) {
                         PrimaryButton("Copy code", Modifier.weight(1f)) {
                             val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            cm.setPrimaryClip(ClipData.newPlainText("MacroLoop code", code))
+                            cm.setPrimaryClip(ClipData.newPlainText("TapLens code", code))
                             Toast.makeText(ctx, "Code copied", Toast.LENGTH_SHORT).show()
                         }
                         Spacer(Modifier.width(8.dp))
@@ -692,7 +767,7 @@ class MainActivity : ComponentActivity() {
                 Row {
                     PrimaryButton("Copy code", Modifier.weight(1f)) {
                         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("MacroLoop code", code))
+                        cm.setPrimaryClip(ClipData.newPlainText("TapLens code", code))
                         Toast.makeText(ctx, "Code copied", Toast.LENGTH_SHORT).show()
                     }
                     Spacer(Modifier.width(8.dp))
@@ -707,7 +782,7 @@ class MainActivity : ComponentActivity() {
                 )
                 Spacer(Modifier.height(16.dp))
                 Text("Last checked: ${License.lastCheckedText(ctx)}", fontSize = 13.sp, color = Tokens.textMuted)
-                if (License.offline) Text("No internet right now. MacroLoop keeps working for up to 24 hours after the last check.", fontSize = 13.sp, color = Tokens.warning, modifier = Modifier.padding(top = 2.dp))
+                if (License.offline) Text("No internet right now. TapLens keeps working for up to 24 hours after the last check.", fontSize = 13.sp, color = Tokens.warning, modifier = Modifier.padding(top = 2.dp))
                 Spacer(Modifier.height(16.dp))
                 Text(
                     "Sharing macros: only a phone the owner has switched on can export or open a shared macro. Trial phones can play their own macros but cannot share.",
@@ -849,7 +924,7 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
             )
             SetupRow(
-                title = "Let MacroLoop tap for you",
+                title = "Let TapLens tap for you",
                 why = "Turns on the accessibility service. If the switch is grey, open App info, tap the three dots, and choose \"Allow restricted settings\" first.",
                 ok = accessibilityOn,
                 action = "Open accessibility settings",
@@ -872,7 +947,7 @@ class MainActivity : ComponentActivity() {
                         Text("Other apps with accessibility on", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Tokens.text)
                         Text(others.joinToString(", "), fontSize = 14.sp, color = Tokens.primary, modifier = Modifier.padding(top = 2.dp))
                         Text(
-                            "If MacroLoop's taps act strangely, turn the other apps off in Accessibility settings. Two apps that tap or draw over the screen at the same time can get in each other's way.",
+                            "If TapLens's taps act strangely, turn the other apps off in Accessibility settings. Two apps that tap or draw over the screen at the same time can get in each other's way.",
                             fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 4.dp),
                         )
                     }
@@ -881,7 +956,7 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.height(12.dp))
             SetupRow(
                 title = "Don't let the battery saver stop it",
-                why = "Your phone may close MacroLoop while a macro runs. Allow it to run without limits.",
+                why = "Your phone may close TapLens while a macro runs. Allow it to run without limits.",
                 ok = batteryOk,
                 action = "Allow",
             ) {
@@ -892,7 +967,7 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.height(12.dp))
             SetupRow(
                 title = "See the screen (for finding pictures)",
-                why = "Lets MacroLoop look at the screen to find pictures. Android asks each time MacroLoop is closed or the phone restarts. Nothing is saved or sent.",
+                why = "Lets TapLens look at the screen to find pictures. Android asks each time TapLens is closed or the phone restarts. Nothing is saved or sent.",
                 ok = CaptureService.running,
                 action = "Allow screen capture",
             ) { askForCapture() }
@@ -921,11 +996,11 @@ class MainActivity : ComponentActivity() {
                     fontSize = 14.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
                 )
                 val steps = listOf(
-                    "Tap \"Open accessibility settings\" above, find MacroLoop under Downloaded apps (or Installed apps) and tap it once. A message says it is restricted. This makes the option appear in the next step.",
-                    "Tap \"Open MacroLoop's App info\" below.",
+                    "Tap \"Open accessibility settings\" above, find TapLens under Downloaded apps (or Installed apps) and tap it once. A message says it is restricted. This makes the option appear in the next step.",
+                    "Tap \"Open TapLens's App info\" below.",
                     "Tap the three dots at the top right, then \"Allow restricted settings\". Confirm with your PIN or fingerprint if asked.",
                     "Close Settings completely: open the recent apps screen and swipe Settings away.",
-                    "Come back here, tap \"Open accessibility settings\" again, tap MacroLoop and switch it On.",
+                    "Come back here, tap \"Open accessibility settings\" again, tap TapLens and switch it On.",
                     "Still grey? Restart the phone, then repeat step 5.",
                 )
                 steps.forEachIndexed { i, t ->
@@ -935,7 +1010,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                SecondaryButton("Open MacroLoop's App info", Modifier.fillMaxWidth()) {
+                SecondaryButton("Open TapLens's App info", Modifier.fillMaxWidth()) {
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                 }
             }
@@ -1064,11 +1139,11 @@ class MainActivity : ComponentActivity() {
      */
     private fun startMode(m: Macro, mode: Int) {
         if (MacroService.instance == null) {
-            Toast.makeText(this, "Turn on MacroLoop in accessibility settings first.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Turn on TapLens in accessibility settings first.", Toast.LENGTH_LONG).show()
             return
         }
         if (!License.allowed(this)) {
-            Toast.makeText(this, License.message.ifBlank { "MacroLoop is locked." }, Toast.LENGTH_LONG).show()
+            Toast.makeText(this, License.message.ifBlank { "TapLens is locked." }, Toast.LENGTH_LONG).show()
             return
         }
         if (mode == 1 && m.runOnly) {
@@ -1093,7 +1168,7 @@ class MainActivity : ComponentActivity() {
         Handler(Looper.getMainLooper()).postDelayed({
             val svc = MacroService.instance
             if (svc == null) {
-                Toast.makeText(this, "Turn on MacroLoop in accessibility settings first.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Turn on TapLens in accessibility settings first.", Toast.LENGTH_LONG).show()
             } else {
                 if (mode == 1) svc.startEditor(id) else svc.showPlayChip(id)
                 moveTaskToBack(true)
@@ -1103,7 +1178,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun MacroLoopTheme(content: @Composable () -> Unit) {
+private fun MacroLoopTheme(scale: Float, content: @Composable () -> Unit) {
+    val d = androidx.compose.ui.platform.LocalDensity.current
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(d.density * scale, d.fontScale),
+    ) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             background = Tokens.background,
@@ -1119,5 +1198,6 @@ private fun MacroLoopTheme(content: @Composable () -> Unit) {
         ) {
             content()
         }
+    }
     }
 }

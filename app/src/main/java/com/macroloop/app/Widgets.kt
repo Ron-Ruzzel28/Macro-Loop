@@ -160,7 +160,7 @@ class ToolButton(
         contentDescription = label
         addView(iconView, LayoutParams(Ui.dp(context, 26), Ui.dp(context, 26)))
         text.text = label
-        text.textSize = 11f
+        text.textSize = Ui.sp(11f)
         text.setTextColor(TokenInts.text)
         text.gravity = Gravity.CENTER
         addView(text, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
@@ -225,7 +225,7 @@ class MarkerView(
         when (kind) {
             Kind.TAP, Kind.SWIPE_START, Kind.SWIPE_END -> {
                 val r = minOf(width, height) / 2f
-                body.color = if (kind == Kind.SWIPE_END) 0xCCFBBF24.toInt() else 0xCC2DD4BF.toInt()
+                body.color = if (kind == Kind.SWIPE_END) 0xCCFBBF24.toInt() else (0xCC000000.toInt() or (TokenInts.primary and 0xFFFFFF))
                 c.drawCircle(width / 2f, height / 2f, r - ring.strokeWidth, body)
                 c.drawCircle(width / 2f, height / 2f, r - ring.strokeWidth, ring)
                 numberPaint.textSize = r * 0.9f

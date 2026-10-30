@@ -134,7 +134,7 @@ class PlayChip(
         fun check(label: String, key: String) {
             val c = CheckBox(ctx).apply {
                 text = label
-                textSize = 15f
+                textSize = Ui.sp(15f)
                 setTextColor(TokenInts.text)
                 isChecked = prefs.getBoolean(key, false)
                 minHeight = dp(44)
@@ -147,7 +147,7 @@ class PlayChip(
         box.addView(
             TextView(ctx).apply {
                 text = "CLOSE"
-                textSize = 14f
+                textSize = Ui.sp(14f)
                 setTextColor(TokenInts.primary)
                 gravity = Gravity.END
                 setPadding(dp(8), dp(10), dp(8), dp(8))

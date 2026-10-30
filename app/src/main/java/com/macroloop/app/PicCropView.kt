@@ -33,13 +33,13 @@ class PicCropView(
     private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = TokenInts.primary
         style = Paint.Style.STROKE
-        strokeWidth = Ui.dp(context, 2).toFloat()
+        strokeWidth = Ui.dpFixed(context, 2).toFloat()
     }
     private val handle = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TokenInts.primary }
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = Ui.dp(context, 2).toFloat()
+        strokeWidth = Ui.dpFixed(context, 2).toFloat()
     }
     private val pic = Paint(Paint.FILTER_BITMAP_FLAG)
 
@@ -82,7 +82,7 @@ class PicCropView(
         c.drawRect(dst.left, r.top, r.left, r.bottom, dim)
         c.drawRect(r.right, r.top, dst.right, r.bottom, dim)
         c.drawRect(r, border)
-        val hr = Ui.dp(context, 7).toFloat()
+        val hr = Ui.dpFixed(context, 7).toFloat()
         for ((x, y) in listOf(r.left to r.top, r.right to r.top, r.left to r.bottom, r.right to r.bottom)) {
             c.drawCircle(x, y, hr, handle)
             c.drawCircle(x, y, hr, ring)
@@ -90,7 +90,7 @@ class PicCropView(
         if (showDot) {
             val dx = sx(dot.x)
             val dy = sy(dot.y)
-            val rr = Ui.dp(context, 9).toFloat()
+            val rr = Ui.dpFixed(context, 9).toFloat()
             c.drawCircle(dx, dy, rr, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x66FFFFFF })
             c.drawCircle(dx, dy, rr, ring)
             c.drawLine(dx - rr * 1.6f, dy, dx + rr * 1.6f, dy, ring)
@@ -147,7 +147,7 @@ class PicCropView(
     }
 
     private fun pick(x: Float, y: Float): Drag {
-        val near = Ui.dp(context, 28).toFloat()
+        val near = Ui.dpFixed(context, 28).toFloat()
         fun d(px: Float, py: Float) = hypot(x - sx(px), y - sy(py))
         if (showDot && d(dot.x, dot.y) < near) return Drag.DOT
         val corners = listOf(

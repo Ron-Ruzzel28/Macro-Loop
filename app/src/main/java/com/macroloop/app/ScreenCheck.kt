@@ -118,13 +118,14 @@ object ScreenCheck {
         val y1 = (region.bottom - 1).coerceIn(y0, frame.height - 1)
         if (x1 - x0 < 6 || y1 - y0 < 6) return false
         val inset = 2
-        fun teal(p: Int): Boolean {
+        fun accent(p: Int): Boolean {
             val r = (p shr 16) and 255; val g = (p shr 8) and 255; val b = p and 255
-            return kotlin.math.abs(r - 0x2D) < 28 && kotlin.math.abs(g - 0xD4) < 28 && kotlin.math.abs(b - 0xBF) < 28
+            val m = TokenInts.primary
+            return kotlin.math.abs(r - ((m shr 16) and 255)) < 28 && kotlin.math.abs(g - ((m shr 8) and 255)) < 28 && kotlin.math.abs(b - (m and 255)) < 28
         }
         fun share(count: Int, get: (Int) -> Int): Float {
             var hit = 0
-            for (i in 0 until count) if (teal(get(i))) hit++
+            for (i in 0 until count) if (accent(get(i))) hit++
             return hit.toFloat() / count
         }
         val w = x1 - x0 + 1
@@ -176,7 +177,7 @@ object ScreenCheck {
         check("a real screen is not blank", !isBlank(bmp))
         val withBox = bmp.copy(Bitmap.Config.ARGB_8888, true)
         val boxCv = android.graphics.Canvas(withBox)
-        val line = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 8f; color = 0xFF2DD4BF.toInt() }
+        val line = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 8f; color = TokenInts.primary }
         boxCv.drawRect(60f + 4f, 60f + 4f, 220f - 4f, 160f - 4f, line)
         check("capture box still on screen is noticed", markerShows(withBox, Rect(60, 60, 220, 160)))
         check("clean screen has no capture box", !markerShows(bmp, Rect(60, 60, 220, 160)))

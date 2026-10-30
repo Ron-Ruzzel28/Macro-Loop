@@ -71,6 +71,7 @@ class MacroService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        Ui.loadScale(this)
         instance = this
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         MacroRepository.init(applicationContext)
@@ -112,7 +113,7 @@ class MacroService : AccessibilityService() {
     /** True if the licence allows running. If not, says why on screen. */
     private fun licensed(): Boolean {
         if (License.allowed(this)) return true
-        Toast.makeText(this, License.message.ifBlank { "MacroLoop is locked. Open the app for details." }, Toast.LENGTH_LONG).show()
+        Toast.makeText(this, License.message.ifBlank { "TapLens is locked. Open the app for details." }, Toast.LENGTH_LONG).show()
         return false
     }
 
@@ -124,6 +125,7 @@ class MacroService : AccessibilityService() {
         val macro = MacroRepository.get(macroId) ?: return
         if (macro.runOnly) return
         warnOrientation(macro)
+        Ui.loadScale(this)
         editor = EditorOverlay(this, wm, macro, scope) { closeEditor() }
         editor?.show()
     }
@@ -154,6 +156,7 @@ class MacroService : AccessibilityService() {
         val first = playChip == null
         playChip?.dismiss()
         playMacroId = macroId
+        Ui.loadScale(this)
         playChip = PlayChip(this, wm, macro.name, playX, playY, { x, y -> playX = x; playY = y }, { startFromPlayChip() }, { closePlayChip() }).also { it.show() }
         if (first) Toast.makeText(this, "${macro.name} is ready. Open your app, then press Play.", Toast.LENGTH_LONG).show()
     }
@@ -193,7 +196,7 @@ class MacroService : AccessibilityService() {
     /** Also true when only a watcher looks at the screen, or the stuck check is on. */
     fun needsCapture(macro: Macro): Boolean = macroNeedsCapture(macro)
 
-    /** Opens MacroLoop on Android's "start capturing" question, so one tap on Start fixes it. */
+    /** Opens TapLens on Android's "start capturing" question, so one tap on Start fixes it. */
     private fun askCapturePrompt() {
         runCatching {
             startActivity(
@@ -350,9 +353,9 @@ class MacroService : AccessibilityService() {
      * Returns null when it started, otherwise the reason.
      */
     fun startScheduled(macro: Macro): String? {
-        if (!License.allowed(this)) return "MacroLoop is locked: " + License.message
+        if (!License.allowed(this)) return "TapLens is locked: " + License.message
         if (isRunning()) return "another macro was already running"
-        if (needsCapture(macro) && !CaptureService.running) return "screen capture is off. Open MacroLoop and tap Start"
+        if (needsCapture(macro) && !CaptureService.running) return "screen capture is off. Open TapLens and tap Start"
         closeEditor()
         closePlayChip()
         runMacro(macro, maxMinutes = macro.schedule.durationMin)
@@ -514,7 +517,7 @@ class MacroService : AccessibilityService() {
             StepType.OPEN_QUICKSETTING -> global(GLOBAL_ACTION_QUICK_SETTINGS, "Open Quicksetting", where)
             StepType.LOCK_SCREEN -> global(GLOBAL_ACTION_LOCK_SCREEN, "Lock Screen", where)
             StepType.TOAST -> {
-                Toast.makeText(this@MacroService, step.text.ifBlank { "MacroLoop" }, Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MacroService, step.text.ifBlank { "TapLens" }, Toast.LENGTH_SHORT).show()
                 Outcome.Ok
             }
             StepType.OPEN_APP -> openApp(step.text, where)
@@ -778,12 +781,12 @@ class MacroService : AccessibilityService() {
     /** A ring where a tap was sent, if "Show taps" is on in Debug Setting. It cannot be touched, so it never gets in the way. */
     private fun flashTap(x: Int, y: Int) {
         if (!getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_SHOW_TAPS, false)) return
-        val size = Ui.dp(this, 44)
+        val size = Ui.dpFixed(this, 44)
         val v = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(0x66FFFFFF)
-                setStroke(Ui.dp(this@MacroService, 3), TokenInts.warning)
+                setStroke(Ui.dpFixed(this@MacroService, 3), TokenInts.warning)
             }
         }
         val lp = WindowManager.LayoutParams(
@@ -819,7 +822,7 @@ class MacroService : AccessibilityService() {
             val v = View(this).apply {
                 background = GradientDrawable().apply {
                     setColor(if (success && prefs.getBoolean(PREF_HIGHLIGHT, false)) (color and 0x00FFFFFF) or 0x55000000 else Color.TRANSPARENT)
-                    setStroke(Ui.dp(this@MacroService, 3), color)
+                    setStroke(Ui.dpFixed(this@MacroService, 3), color)
                 }
             }
             val lp = WindowManager.LayoutParams(
@@ -966,5 +969,5 @@ class MacroService : AccessibilityService() {
         runBar = null
     }
 
-    private fun dp(v: Int) = Ui.dp(this, v)
+    private fun dp(v: Int) = Ui.dpFixed(this, v)
 }

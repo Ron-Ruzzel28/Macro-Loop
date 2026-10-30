@@ -24,13 +24,13 @@ class CropView(context: Context, private val shot: Bitmap) : View(context) {
     private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = TokenInts.primary
         style = Paint.Style.STROKE
-        strokeWidth = Ui.dp(context, 3).toFloat()
+        strokeWidth = Ui.dpFixed(context, 3).toFloat()
     }
     private val handle = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TokenInts.primary }
     private val handleRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = Ui.dp(context, 2).toFloat()
+        strokeWidth = Ui.dpFixed(context, 2).toFloat()
     }
     private val src = Rect(0, 0, shot.width, shot.height)
     private val minSize = 24f
@@ -59,7 +59,7 @@ class CropView(context: Context, private val shot: Bitmap) : View(context) {
         c.drawRect(0f, r.top, r.left, r.bottom, dim)
         c.drawRect(r.right, r.top, width.toFloat(), r.bottom, dim)
         c.drawRect(r, border)
-        val hr = Ui.dp(context, 11).toFloat()
+        val hr = Ui.dpFixed(context, 11).toFloat()
         for ((x, y) in listOf(r.left to r.top, r.right to r.top, r.left to r.bottom, r.right to r.bottom)) {
             c.drawCircle(x, y, hr, handle)
             c.drawCircle(x, y, hr, handleRing)
@@ -89,7 +89,7 @@ class CropView(context: Context, private val shot: Bitmap) : View(context) {
 
     private fun hit(x: Float, y: Float): Drag {
         val r = RectF(box.left * sx(), box.top * sy(), box.right * sx(), box.bottom * sy())
-        val reach = Ui.dp(context, 28).toFloat()
+        val reach = Ui.dpFixed(context, 28).toFloat()
         fun near(px: Float, py: Float) = kotlin.math.abs(x - px) < reach && kotlin.math.abs(y - py) < reach
         return when {
             near(r.left, r.top) -> Drag.TL
