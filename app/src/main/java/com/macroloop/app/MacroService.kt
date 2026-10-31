@@ -396,7 +396,7 @@ class MacroService : AccessibilityService() {
 
         private fun template(id: String): Bitmap? = templates.getOrPut(id) { TemplateStore.load(id) }
 
-        // ---- the log: what happened, with repeats folded ("... x40"), the last 60 lines kept
+        // ---- the log: what happened, with repeats folded ("... x40"), the last 200 lines kept
         private val lines = ArrayDeque<String>()
         private var repeats = 1
         private val t0 = SystemClock.elapsedRealtime()
@@ -434,7 +434,7 @@ class MacroService : AccessibilityService() {
             lastText = text
             repeats = 1
             lines.addLast("$at  $text")
-            while (lines.size > 60) lines.removeFirst()
+            while (lines.size > 200) lines.removeFirst()
         }
 
         fun logText(): String = lines.joinToString("\n")

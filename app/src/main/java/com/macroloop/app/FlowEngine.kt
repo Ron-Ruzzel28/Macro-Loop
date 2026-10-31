@@ -311,6 +311,7 @@ class FlowEngine(private val host: StepHost, private val maxJumps: Int = 5000) {
 
         return when (val o = outcome) {
             Outcome.Ok -> {
+                host.note("step $where ran")
                 val after = step.waitNextMs
                 if (after > 0) waitWatching(host.humanWait(after), state)
                 val flow = if (step.onSuccess.isNotEmpty()) runList(macroName, step.onSuccess, "$where on success", state) else Flow.Next

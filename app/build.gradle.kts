@@ -12,8 +12,8 @@ android {
         applicationId = "com.taplens.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 15
-        versionName = "15"
+        versionCode = 16
+        versionName = "16"
 
         ndk {
             abiFilters += listOf("arm64-v8a")

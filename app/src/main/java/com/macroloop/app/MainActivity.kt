@@ -1067,6 +1067,16 @@ class MainActivity : ComponentActivity() {
                             Text("${e.macro}  ·  ${fmt.format(java.util.Date(e.time))}", fontSize = 15.sp, color = Tokens.text, fontWeight = FontWeight.SemiBold)
                             Text(e.result, fontSize = 14.sp, color = if (e.problem) Tokens.danger else Tokens.textMuted, modifier = Modifier.padding(top = 2.dp))
                             Text("${e.seconds} s", fontSize = 12.sp, color = Tokens.textMuted)
+                            if (open == e.time) {
+                                val ctxCopy = LocalContext.current
+                                SecondaryButton("Copy report", Modifier.padding(top = 8.dp)) {
+                                    val ver = runCatching { ctxCopy.packageManager.getPackageInfo(ctxCopy.packageName, 0).versionName }.getOrDefault("?")
+                                    val text = listOf("TapLens v$ver", "${e.macro}  ·  ${fmt.format(java.util.Date(e.time))}  ·  ${e.seconds} s", e.result, "", e.detail).joinToString("\n")
+                                    val cm = ctxCopy.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("TapLens run report", text))
+                                    Toast.makeText(ctxCopy, "Report copied", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                             if (open == e.time && e.detail.isNotBlank()) {
                                 Text("What happened (latest at the bottom):", fontSize = 12.sp, color = Tokens.textMuted, modifier = Modifier.padding(top = 8.dp))
                                 Text(e.detail, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Tokens.text, modifier = Modifier.padding(top = 2.dp))
